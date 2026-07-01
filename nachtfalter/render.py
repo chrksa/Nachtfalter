@@ -184,34 +184,57 @@ class Renderer:
         """Panorama seitlich scrollen (spawnt links -> nach rechts -> nahtloser Loop).
         [0] = unbeleuchtet (Basis), [1] = beleuchtet (per RFID/bg_frame eingeblendet)."""
         s, W, H = self.s, self.W, self.H
-        s.blit(self._sky_gradient(), (0, 0))   # Himmel hinter (oben transparentem) Panorama
+        s.blit(self._sky_gradient(), (0, 0))   # Himmel hinter Panorama zeichnen
 
         dw = max(1, int(H * config.BG_ASPECT))
         base = self._scaled(self._pano[0], dw, H)
         lit = self._scaled(self._pano[1], dw, H) if len(self._pano) > 1 else None
 
-        # Vollbeleuchtetes Panorama einmal vorkomponieren -> im eingeschwungenen
-        # Zustand (Lichter ganz an) nur EIN Blit pro Kachel statt zwei.
+        # Vollbeleuchtetes Panorama einmalig fehlerfrei vorkomponieren
         if lit is not None and self._pano_full is None:
-            full = base.copy(); lit.set_alpha(None); full.blit(lit, (0, 0))
+            full = base.copy()
+            full.blit(lit, (0, 0)) 
             self._pano_full = full
 
-        # Offset aus der Sim (gleicher Wert wie die Lichtquellen-Attraktoren).
+        # Offset aus der Sim
         off = sim.bg_scroll % dw
         blend = clamp(sim.bg_frame / 19.0, 0.0, 1.0) if lit else 0.0
 
-        if blend >= 0.999 and self._pano_full is not None:
-            layer, second = self._pano_full, None
-        elif blend <= 0.001 or lit is None:
-            layer, second = base, None
-        else:
-            lit.set_alpha(int(blend * 255)); layer, second = base, lit
+        # Variablen für den Zeichen-Loop vorbereiten
+        layer = base
+        second = None
+        second_alpha = 255
 
+        if blend >= 0.999 and self._pano_full is not None:
+            layer = self._pano_full
+        elif blend <= 0.001 or lit is None:
+            layer = base
+        else:
+            # Wenn wir dazwischen sind, nutzen wir das originale 'lit',
+            # merken uns aber den Alpha-Wert für den Blit-Vorgang unten!
+            second = lit
+            second_alpha = int(blend * 255)
+
+        # Zeichnen der Kacheln im Loop
         x = off - dw
         while x < W:
             s.blit(layer, (x, 0))
+            
             if second is not None:
-                s.blit(second, (x, 0))
+                # Hier ist der Trick für moderne Pygame-Versionen:
+                # Wir erstellen ein minimales, temporäres Alpha-Steuer-Surface,
+                # um den Blit zu modulieren, OHNE das 'second'-Bild zu verändern.
+                alpha_modifier = pygame.Surface((dw, H), pygame.SRCALPHA)
+                alpha_modifier.fill((255, 255, 255, second_alpha))
+                
+                # Erst das beleuchtete Bild auf ein frisches Temp-Surface kopieren...
+                temp_tile = second.copy()
+                # ...dann die Transparenz per MULTIPLY (Multiplikation) draufrechnen
+                temp_tile.blit(alpha_modifier, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                
+                # Jetzt erst auf den echten Bildschirm blitten
+                s.blit(temp_tile, (x, 0))
+                
             x += dw
 
     def background(self, sim):
