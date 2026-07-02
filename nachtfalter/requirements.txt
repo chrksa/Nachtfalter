@@ -1,4 +1,10 @@
+# Game (Mac mini): pygame + WebSocket-Client + Serial (RFID/ESP32)
 pygame-ce>=2.5
 numpy>=1.24
 pyserial>=3.5
 websocket-client>=1.6
+
+# Tracking (Laptop mit RealSense): Kamera, Bildverarbeitung, WebSocket-Server
+pyrealsense2>=2.54
+opencv-python>=4.9
+websockets>=12.0
