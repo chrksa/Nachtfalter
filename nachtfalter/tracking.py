@@ -4,9 +4,11 @@ RealSense-Tracking -> WebSocket an die Nachtfalter-App (moon.py).
 Erkennt helle Punkte im IR-Bild, mittelt ihren Schwerpunkt und sendet die
 normierte Position als {"active":.., "x":.., "y":..} an ws://127.0.0.1:8765.
 
-Tasten im IR-Fenster:
+Tasten im Tracking-Fenster:
   C          Kalibrierung starten (Mond GANZ LINKS/RECHTS/OBEN/UNTEN halten)
   Leertaste  aktuellen Kalibrier-Schritt aufnehmen
+  T          zwischen IR- und Blob-(Farb-)Tracking umschalten
+  M          im Blob-Modus die Farbmaske einblenden (zum Tunen von BLOB_HSV_*)
   ESC        Kalibrierung abbrechen / sonst Programm beenden
 
 Die Kalibrierung wird in calib.json gespeichert und beim nächsten Start geladen.
@@ -37,6 +39,14 @@ CALIB_STEPS = ["GANZ LINKS", "GANZ RECHTS", "GANZ OBEN", "GANZ UNTEN"]
 _calib_active = False
 _calib_step = 0
 _calib = {}
+
+# --- Blob-Tracking (Farbkamera) als Alternative zum IR-Tracking ----------
+# Getrackt wird der groesste Farb-Blob im folgenden HSV-Bereich. Default deckt
+# ein kraeftiges Gelb (Mond) ab; zum Tunen im BLOB-Modus die Maske mit Taste M
+# einblenden und die Werte hier anpassen (H: 0..179, S/V: 0..255).
+BLOB_HSV_LO   = np.array((15,  60, 150), dtype=np.uint8)
+BLOB_HSV_HI   = np.array((45, 255, 255), dtype=np.uint8)
+BLOB_MIN_AREA = 30       # kleinere Blobs (Pixel) werden ignoriert
 
 
 def load_calib():
@@ -108,12 +118,16 @@ def _get_state():
 
 
 async def _handler(ws, *_):
+    peer = getattr(ws, "remote_address", None)
+    print(f"[tracking] Client verbunden: {peer}")
     try:
         while True:
             await ws.send(json.dumps(_get_state()))
             await asyncio.sleep(0.02)
     except Exception:
         pass
+    finally:
+        print(f"[tracking] Client getrennt: {peer}")
 
 
 def start_server(host="127.0.0.1", port=8765):
@@ -143,11 +157,51 @@ def robust_depth(depth, u, v, win=4):
     return float(np.median(vals)) if vals else 0.0
 
 
+# --- Erkennung: IR-Punkte bzw. Farb-Blob -----------------------------
+def detect_ir(img, vis):
+    """Helle IR-Punkte -> Liste von (u, v)-Schwerpunkten; zeichnet Marker in vis."""
+    _, mask = cv2.threshold(img, 200, 255, cv2.THRESH_BINARY)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    uv = []
+    for c in cnts:
+        if cv2.contourArea(c) < 2:
+            continue
+        M = cv2.moments(c)
+        if M["m00"] == 0:
+            continue
+        u, v = M["m10"] / M["m00"], M["m01"] / M["m00"]
+        uv.append((u, v))
+        cv2.circle(vis, (int(u), int(v)), 6, (0, 255, 0), 1)
+    return uv
+
+
+def detect_blob(bgr):
+    """Groessten Farb-Blob im HSV-Bereich finden -> ([(u, v)], mask); Marker in bgr."""
+    hsv  = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, BLOB_HSV_LO, BLOB_HSV_HI)
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return [], mask
+    c = max(cnts, key=cv2.contourArea)
+    M = cv2.moments(c)
+    if cv2.contourArea(c) < BLOB_MIN_AREA or M["m00"] == 0:
+        return [], mask
+    u, v = M["m10"] / M["m00"], M["m01"] / M["m00"]
+    (cx, cy), r = cv2.minEnclosingCircle(c)
+    cv2.circle(bgr, (int(cx), int(cy)), int(r), (0, 255, 0), 2)
+    cv2.circle(bgr, (int(u), int(v)), 4, (0, 0, 255), -1)
+    return [(u, v)], mask
+
+
 # --- RealSense-Pipeline ----------------------------------------------
 pipe = rs.pipeline()
 cfg = rs.config()
 cfg.enable_stream(rs.stream.infrared, 1, 848, 480, rs.format.y8, 30)   # linker IR
 cfg.enable_stream(rs.stream.depth,       848, 480, rs.format.z16, 30)
+cfg.enable_stream(rs.stream.color,       848, 480, rs.format.bgr8, 30)  # RGB fuer Blob
 profile = pipe.start(cfg)
 
 ds = profile.get_device().first_depth_sensor()
@@ -159,59 +213,60 @@ ds.set_option(rs.option.gain, 16)
 intr = profile.get_stream(rs.stream.infrared, 1).as_video_stream_profile().get_intrinsics()
 
 load_calib()
-start_server()
+start_server(host="0.0.0.0")   # ans LAN binden, damit der Mac ueber Kabel verbindet
+
+mode = "IR"          # aktueller Tracking-Modus: "IR" oder "BLOB"
+show_mask = False    # im BLOB-Modus die Farbmaske in extra Fenster zeigen
 
 try:
     while True:
         frames = pipe.wait_for_frames()
-        ir    = frames.get_infrared_frame(1)
-        depth = frames.get_depth_frame()
-        img = np.asanyarray(ir.get_data())
 
-        _, mask = cv2.threshold(img, 200, 255, cv2.THRESH_BINARY)
-        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # --- Erkennung je nach Modus -> vis (Anzeige) + uv_list (Punkte) ---
+        if mode == "IR":
+            ir  = frames.get_infrared_frame(1)
+            img = np.asanyarray(ir.get_data())
+            vis = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            uv_list = detect_ir(img, vis)
 
-        pts3d = []
-        uv_list = []
-        for c in cnts:
-            if cv2.contourArea(c) < 2:
-                continue
-            M = cv2.moments(c)
-            if M["m00"] == 0:
-                continue
-            u, v = M["m10"] / M["m00"], M["m01"] / M["m00"]
-            uv_list.append((u, v))
-            cv2.circle(img, (int(u), int(v)), 6, 255, 1)
-            z = robust_depth(depth, u, v)
-            if z == 0:
-                continue
-            X, Y, Z = rs.rs2_deproject_pixel_to_point(intr, [u, v], z)
-            pts3d.append((X, Y, Z))
+            depth = frames.get_depth_frame()   # nur im IR-Modus fuer 3D-Anzeige
+            pts3d = []
+            for (u, v) in uv_list:
+                z = robust_depth(depth, u, v)
+                if z > 0:
+                    pts3d.append(rs.rs2_deproject_pixel_to_point(intr, [u, v], z))
+            if pts3d:
+                pos = np.mean(pts3d, axis=0)   # gemittelte Position in Metern (Kamera-Koords)
+                cv2.putText(vis, f"X={pos[0]:+.3f} Y={pos[1]:+.3f} Z={pos[2]:+.3f} m  (n={len(pts3d)})",
+                            (10, 30), FONT, 0.6, (0, 255, 0), 1)
+        else:  # BLOB (Farbkamera)
+            color = frames.get_color_frame()
+            vis   = np.asanyarray(color.get_data()).copy()
+            uv_list, mask = detect_blob(vis)
+            if show_mask:
+                cv2.imshow("Maske", mask)
 
-        # --- gemittelter Schwerpunkt -> normieren -> an App senden ---
+        # --- gemittelter Schwerpunkt -> normieren -> an App senden (beide Modi) ---
         last_mu = last_mv = None
         if uv_list:
             last_mu = sum(p[0] for p in uv_list) / len(uv_list)
             last_mv = sum(p[1] for p in uv_list) / len(uv_list)
             nx, ny = normalize(last_mu, last_mv)
             set_state(True, nx, ny)
-            cv2.putText(img, f"send x={nx:.2f} y={ny:.2f}", (10, 55), FONT, 0.6, 255, 1)
+            cv2.putText(vis, f"send x={nx:.2f} y={ny:.2f}", (10, 55), FONT, 0.6, (0, 255, 0), 1)
         else:
             set_state(False)
 
-        if pts3d:
-            pos = np.mean(pts3d, axis=0)     # gemittelte Position in Metern (Kamera-Koordinaten)
-            cv2.putText(img, f"X={pos[0]:+.3f} Y={pos[1]:+.3f} Z={pos[2]:+.3f} m  (n={len(pts3d)})",
-                        (10, 30), FONT, 0.6, 255, 1)
-
+        cv2.putText(vis, f"Modus: {mode}  (T = wechseln)", (10, 80), FONT, 0.6, (0, 255, 255), 2)
         if _calib_active:
-            cv2.putText(img, f"KALIBRIERUNG {_calib_step + 1}/4: Mond {CALIB_STEPS[_calib_step]} halten -> LEER",
-                        (10, 100), FONT, 0.7, 255, 2)
-            cv2.putText(img, "ESC = abbrechen", (10, 125), FONT, 0.5, 255, 1)
+            cv2.putText(vis, f"KALIBRIERUNG {_calib_step + 1}/4: Mond {CALIB_STEPS[_calib_step]} halten -> LEER",
+                        (10, 110), FONT, 0.7, (0, 255, 0), 2)
+            cv2.putText(vis, "ESC = abbrechen", (10, 135), FONT, 0.5, (0, 255, 0), 1)
         else:
-            cv2.putText(img, "C = Kalibrieren", (10, H_IR - 12), FONT, 0.5, 255, 1)
+            hint = "C = Kalibrieren   T = IR/Blob" + ("   M = Maske" if mode == "BLOB" else "")
+            cv2.putText(vis, hint, (10, H_IR - 12), FONT, 0.5, (0, 255, 0), 1)
 
-        cv2.imshow("IR", img)
+        cv2.imshow("Tracking", vis)
         key = cv2.waitKey(1) & 0xFF
         if key == 27:                       # ESC
             if _calib_active:
@@ -223,6 +278,21 @@ try:
             calib_start()
         elif key == ord(' ') and _calib_active:
             calib_capture(last_mu, last_mv)
+        elif key == ord('t') and not _calib_active:
+            mode = "BLOB" if mode == "IR" else "IR"
+            if mode == "IR":
+                try:
+                    cv2.destroyWindow("Maske")
+                except Exception:
+                    pass
+            print(f"[tracking] Modus -> {mode}")
+        elif key == ord('m') and mode == "BLOB":
+            show_mask = not show_mask
+            if not show_mask:
+                try:
+                    cv2.destroyWindow("Maske")
+                except Exception:
+                    pass
 finally:
     pipe.stop()
     cv2.destroyAllWindows()

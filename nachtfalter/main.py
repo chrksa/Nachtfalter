@@ -73,13 +73,8 @@ def main():
     sound_channel.play(snd_01, loops=-1)
     mouse_was_inside = False
     # -------------------------
-
-    # --- RFID-Tag-Status --------------------------------------------------
-    # Ist der Arduino (RFID_MoonIdle) verbunden, kommt der Status von dort.
-    # Ist keine Verbindung da, gilt der simulierte Debug-Button (Klick / Taste T).
-    # Bedeutung (invertiert): RFID AN -> Lichter AUS,  RFID AUS -> Lichter AN.
     rfid_sim_on = False        # Fallback-Wert des Debug-Buttons
-    # ---------------------------------------------------------------------
+    # -------------------------
 
     clock = pygame.time.Clock()
     running = True
