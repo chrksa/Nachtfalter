@@ -174,7 +174,7 @@ class Sim:
         dw = int(H * config.BG_ASPECT)          # identisch zur Kachelbreite im Renderer
         if dw <= 0:
             return
-        base_x = base_x = (-self.bg_scroll) % dw - dw        # erste Kachel beginnt jetzt rechts außerhalb
+        base_x = (-self.bg_scroll) % dw - dw        # erste Kachel beginnt jetzt rechts außerhalb
         n_tiles = int(W / dw) + 2
         for L in config.BG_LIGHTS:
             poly_uv = L["poly"]

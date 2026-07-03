@@ -53,7 +53,7 @@ class Renderer:
         self._heat_r = max(2, int(34 * S["heat_halo"]))
         self._moth_px = config.MOTH_BASE_PX * S["moth"]
 
-        self._light_glow = assets.make_glow(self._glow_r, (255, 200, 120), 1.0)
+        self._light_glow = assets.make_glow(self._glow_r, (251, 251, 236), 1.0)
         self._lens = assets.make_glow(self._lens_r, (255, 248, 235), 1.0, profile="lens")
 
         # --- vorgerenderte Sprite-Caches (keine Pro-Frame-Allokation) ---
