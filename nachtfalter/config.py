@@ -152,9 +152,9 @@ MOON = dict(
     url="ws://127.0.0.1:8765",
     flipX=True,
     flipY=False,
-    smooth=0.99,         # Trägheit (0=träge .. 1=hart)
-    maxJump=0.3,         # Ausreißer-Schwelle (normalisiert 0..1)
-    confirm=2,           # so viele Messages muss ein Sprung halten
+    smooth=0.18,         # Trägheit pro Frame (0=träge/sehr weich .. 1=hart/sofort)
+    maxJump=0.3,         # Ausreißer-Schwelle (normalisiert 0..1): groesserer Sprung -> erst bestaetigen
+    confirm=3,           # so viele Messages muss ein Sprung halten, sonst verworfen
 )
 
 SOUNDS = dict(
