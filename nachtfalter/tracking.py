@@ -50,20 +50,69 @@ _calib = {}
 BLOB_MIN_BRIGHT = 200    # Helligkeit 0..255, dunklere Pixel werden ignoriert
 BLOB_MIN_AREA   = 30     # kleinere Blobs (Pixel) werden ignoriert
 BLOB_MIN_CIRC   = 0.60   # Rundheit 0..1 (1 = perfekter Kreis); darunter verworfen
+BLOB_MIN_FILL   = 0.70   # Fuellgrad 0..1: Flaeche / umschliessender Kreis. Verschmilzt der
+                         # Mond mit einer anderen Lichtquelle, waechst der Kreis -> Fuellgrad
+                         # sinkt -> verworfen. Hoeher = strenger "nur der kompakte Mond".
 
 # Werden aus dieser Datei geladen/gespeichert (Taste S) und ueberschreiben dann
 # die obigen Defaults; im BLOB-Modus per Regler im Maske-Fenster einstellbar.
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "blob_settings.json")
 MASK_WIN = "Maske"
+TRACK_WIN = "Tracking"
+
+# --- Erkennungsbereich (ROI): nur INNERHALB dieses Rechtecks wird gesucht ----
+# Normiert 0..1: [x0, y0, x1, y1]. Default = ganzes Bild. Im Tracking-Fenster mit
+# der linken Maustaste ein Rechteck aufziehen; Taste R = wieder ganzes Bild.
+ROI = [0.0, 0.0, 1.0, 1.0]
+_roi_drag = None        # Startpunkt (Pixel) waehrend des Ziehens
+
+
+def _rect_norm(p0, p1):
+    x0, x1 = sorted((p0[0], p1[0])); y0, y1 = sorted((p0[1], p1[1]))
+    return [x0 / W_IR, y0 / H_IR, x1 / W_IR, y1 / H_IR]
+
+
+def on_tracking_mouse(event, x, y, flags, param):
+    """Linke Maustaste im Tracking-Fenster zieht den Erkennungsbereich auf."""
+    global _roi_drag
+    if event == cv2.EVENT_LBUTTONDOWN:
+        _roi_drag = (x, y)
+    elif event == cv2.EVENT_MOUSEMOVE and _roi_drag is not None:
+        ROI[:] = _rect_norm(_roi_drag, (x, y))
+    elif event == cv2.EVENT_LBUTTONUP and _roi_drag is not None:
+        r = _rect_norm(_roi_drag, (x, y))
+        _roi_drag = None
+        if (r[2] - r[0]) < 0.02 or (r[3] - r[1]) < 0.02:   # versehentlicher Klick
+            ROI[:] = [0.0, 0.0, 1.0, 1.0]
+            print("[tracking] ROI zurueckgesetzt (ganzes Bild)")
+        else:
+            ROI[:] = r
+            print(f"[tracking] ROI gesetzt: {[round(c, 3) for c in ROI]}")
+
+
+def apply_roi(mask):
+    """Alles ausserhalb des ROI-Rechtecks auf 0 setzen -> wird nicht erkannt."""
+    h, w = mask.shape[:2]
+    x0 = max(0, min(w, int(ROI[0] * w))); x1 = max(0, min(w, int(ROI[2] * w)))
+    y0 = max(0, min(h, int(ROI[1] * h))); y1 = max(0, min(h, int(ROI[3] * h)))
+    if x0 > 0: mask[:, :x0] = 0
+    if x1 < w: mask[:, x1:] = 0
+    if y0 > 0: mask[:y0, :] = 0
+    if y1 < h: mask[y1:, :] = 0
+    return mask
 
 
 def load_settings():
-    global BLOB_MIN_BRIGHT, BLOB_MIN_AREA, BLOB_MIN_CIRC
+    global BLOB_MIN_BRIGHT, BLOB_MIN_AREA, BLOB_MIN_CIRC, BLOB_MIN_FILL
     try:
         d = json.load(open(SETTINGS_FILE, encoding="utf-8"))
         BLOB_MIN_BRIGHT = int(d["bright"])
         BLOB_MIN_AREA   = int(d["area"])
         BLOB_MIN_CIRC   = float(d["circ"])
+        if "fill" in d:
+            BLOB_MIN_FILL = float(d["fill"])
+        if isinstance(d.get("roi"), list) and len(d["roi"]) == 4:
+            ROI[:] = [float(c) for c in d["roi"]]
         print(f"[tracking] Blob-Settings geladen: {d}")
     except Exception:
         print("[tracking] keine Blob-Settings -> Defaults (Taste S speichert)")
@@ -71,7 +120,9 @@ def load_settings():
 
 def save_settings():
     d = dict(bright=int(BLOB_MIN_BRIGHT), area=int(BLOB_MIN_AREA),
-             circ=round(float(BLOB_MIN_CIRC), 2))
+             circ=round(float(BLOB_MIN_CIRC), 2),
+             fill=round(float(BLOB_MIN_FILL), 2),
+             roi=[round(c, 4) for c in ROI])
     try:
         json.dump(d, open(SETTINGS_FILE, "w", encoding="utf-8"))
         print(f"[tracking] Blob-Settings gespeichert: {d}")
@@ -85,15 +136,17 @@ def open_mask_window():
     cv2.createTrackbar("Hell",  MASK_WIN, int(BLOB_MIN_BRIGHT),       255,  lambda v: None)
     cv2.createTrackbar("Area",  MASK_WIN, int(BLOB_MIN_AREA),        2000,  lambda v: None)
     cv2.createTrackbar("Rund%", MASK_WIN, int(BLOB_MIN_CIRC * 100),   100,  lambda v: None)
+    cv2.createTrackbar("Fuell%", MASK_WIN, int(BLOB_MIN_FILL * 100),  100,  lambda v: None)
 
 
 def read_mask_trackbars():
     """Reglerstellungen in die Blob-Settings uebernehmen (falls Fenster offen)."""
-    global BLOB_MIN_BRIGHT, BLOB_MIN_AREA, BLOB_MIN_CIRC
+    global BLOB_MIN_BRIGHT, BLOB_MIN_AREA, BLOB_MIN_CIRC, BLOB_MIN_FILL
     try:
         BLOB_MIN_BRIGHT = cv2.getTrackbarPos("Hell",  MASK_WIN)
         BLOB_MIN_AREA   = cv2.getTrackbarPos("Area",  MASK_WIN)
         BLOB_MIN_CIRC   = cv2.getTrackbarPos("Rund%", MASK_WIN) / 100.0
+        BLOB_MIN_FILL   = cv2.getTrackbarPos("Fuell%", MASK_WIN) / 100.0
     except cv2.error:
         pass   # Fenster (noch) nicht da
 
@@ -139,7 +192,8 @@ def calib_capture(mu, mv, pos):
             print("[tracking] keine Tiefe/kein Punkt -> nichts aufgenommen")
             return
         key = ("near", "far", "top", "bot")[_calib_step]
-        _calib[key] = float(pos[2]) if key in ("near", "far") else float(pos[1])
+        # X aus Tiefe (pos[2]); Y (hoch/runter) aus der Kamera-Horizontalen (pos[0])
+        _calib[key] = float(pos[2]) if key in ("near", "far") else float(pos[0])
         _calib_step += 1
         if _calib_step < 4:
             print(f"[tracking] ok. Jetzt Mond {SIDE_STEPS[_calib_step]} halten, dann Leertaste")
@@ -180,14 +234,21 @@ def normalize(u, v):
 # IR-Modus. Grenzen in Metern aus der X/Y/Z-Anzeige oben im Fenster ablesen
 # (Mond an die vier Extrempositionen halten) und hier eintragen.
 SIDE_VIEW     = True
-Z_NEAR, Z_FAR = 0.40, 1.20    # Mond ganz nah / ganz weit   -> App-X 0..1
-Y_TOP, Y_BOT  = -0.30, 0.30   # Mond ganz oben / ganz unten -> App-Y (Y zeigt nach unten)
+Z_NEAR, Z_FAR = 0.40, 1.20    # Mond ganz nah / ganz weit -> App-X (nah=links 0, fern=rechts 1)
+# Kamera um 90 gedreht: App-Y (hoch/runter) kommt jetzt aus der KAMERA-HORIZONTALEN
+# pos[0] (links/rechts im Bild), nicht mehr aus der Hoehe pos[1].
+Y_TOP, Y_BOT  = -0.30, 0.30   # Mond ganz oben / ganz unten -> App-Y (ueber pos[0])
+
+# Achsentausch nicht mehr noetig (X=Tiefe, Y=Horizontale sind explizit zugeordnet).
+SWAP_XY = False
 
 
 def normalize_side(z, y):
     """Tiefe z + Hoehe y (Meter) -> normiert 0..1 fuer die seitliche Montage."""
-    x  = (z - Z_NEAR) / (Z_FAR - Z_NEAR) if Z_FAR != Z_NEAR else 0.5
-    yy = (y - Y_TOP)  / (Y_BOT - Y_TOP)  if Y_BOT != Y_TOP else 0.5
+    # X invertiert: nah = rechts (1), fern = links (0)
+    x  = (Z_FAR - z)  / (Z_FAR - Z_NEAR) if Z_FAR != Z_NEAR else 0.5
+    # Y invertiert: hoch/runter gedreht
+    yy = (Y_BOT - y)  / (Y_BOT - Y_TOP)  if Y_BOT != Y_TOP else 0.5
     return min(1.0, max(0.0, x)), min(1.0, max(0.0, yy))
 
 
@@ -217,6 +278,8 @@ _state_lock = threading.Lock()
 
 
 def set_state(active, x=0.5, y=0.5):
+    if SWAP_XY:                  # Kamera gedreht -> X/Y-Achse tauschen
+        x, y = y, x
     with _state_lock:
         _state.update(active=active, x=x, y=y)
 
@@ -270,6 +333,7 @@ def robust_depth(depth, u, v, win=4):
 def detect_ir(img, vis):
     """Helle IR-Punkte -> Liste von (u, v)-Schwerpunkten; zeichnet Marker in vis."""
     _, mask = cv2.threshold(img, 200, 255, cv2.THRESH_BINARY)
+    apply_roi(mask)                    # ausserhalb des Erkennungsbereichs ignorieren
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     uv = []
     for c in cnts:
@@ -288,13 +352,15 @@ def detect_blob(bgr):
     """Hellsten, runden Blob finden -> ([(u, v)], mask); Marker in bgr."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     _, mask = cv2.threshold(gray, BLOB_MIN_BRIGHT, 255, cv2.THRESH_BINARY)
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    # OPEN entfernt Rauschen; nur kleines CLOSE (3x3), damit der Mond nicht mit einer
+    # nahen Lichtquelle zu einem Blob zusammengeklebt wird.
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    apply_roi(mask)                    # ausserhalb des Erkennungsbereichs ignorieren
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # hell genug + rund genug -> davon den groessten Blob nehmen
-    best, best_area = None, 0.0
+    # hell + gross genug + rund + kompakt (Fuellgrad) -> davon den groessten nehmen
+    best, best_area, best_circle = None, 0.0, None
     for c in cnts:
         area = cv2.contourArea(c)
         if area < BLOB_MIN_AREA:
@@ -305,8 +371,12 @@ def detect_blob(bgr):
         circ = 4.0 * np.pi * area / (peri * peri)   # 1.0 = perfekter Kreis
         if circ < BLOB_MIN_CIRC:
             continue
+        (cx, cy), r = cv2.minEnclosingCircle(c)
+        fill = area / (np.pi * r * r) if r > 0 else 0.0   # 1.0 = fuellt den Kreis ganz
+        if fill < BLOB_MIN_FILL:
+            continue                                       # verschmolzen/laenglich -> raus
         if area > best_area:
-            best, best_area = c, area
+            best, best_area, best_circle = c, area, (cx, cy, r)
 
     if best is None:
         return [], mask
@@ -314,7 +384,7 @@ def detect_blob(bgr):
     if M["m00"] == 0:
         return [], mask
     u, v = M["m10"] / M["m00"], M["m01"] / M["m00"]
-    (cx, cy), r = cv2.minEnclosingCircle(best)
+    cx, cy, r = best_circle
     cv2.circle(bgr, (int(cx), int(cy)), int(r), (0, 255, 0), 2)
     cv2.circle(bgr, (int(u), int(v)), 4, (0, 0, 255), -1)
     return [(u, v)], mask
@@ -392,6 +462,9 @@ mode = "BLOB"        # Hauptmodus (BLOB); IR ist Fallback, Umschalten mit T
 show_mask = False    # im BLOB-Modus die Farbmaske in extra Fenster zeigen
 set_emitter(mode == "BLOB")   # Emitter zum Startmodus passend setzen
 
+cv2.namedWindow(TRACK_WIN)
+cv2.setMouseCallback(TRACK_WIN, on_tracking_mouse)   # Ziehen = Erkennungsbereich
+
 try:
     while True:
         frames = pipe.wait_for_frames()
@@ -420,7 +493,7 @@ try:
             # --- seitliche Montage: X aus Tiefe (Z), Y aus Hoehe (Y in Metern) ---
             if SIDE_VIEW:
                 if pts3d:
-                    nx, ny = normalize_side(pos[2], pos[1])
+                    nx, ny = normalize_side(pos[2], pos[0])   # X=Tiefe, Y=Horizontale
                     set_state(True, nx, ny)
                     cv2.putText(vis, f"SIDE send x={nx:.2f} y={ny:.2f}", (10, 55), FONT, 0.6, (0, 255, 0), 1)
                 else:
@@ -442,7 +515,7 @@ try:
                     last_pos = pos
                     cv2.putText(vis, f"X={pos[0]:+.3f} Y={pos[1]:+.3f} Z={pos[2]:+.3f} m",
                                 (10, 30), FONT, 0.6, (0, 255, 0), 1)
-                    nx, ny = normalize_side(pos[2], pos[1])
+                    nx, ny = normalize_side(pos[2], pos[0])   # X=Tiefe, Y=Horizontale
                     set_state(True, nx, ny)
                     cv2.putText(vis, f"SIDE send x={nx:.2f} y={ny:.2f}", (10, 55), FONT, 0.6, (0, 255, 0), 1)
                 elif uv_list:
@@ -464,6 +537,13 @@ try:
             else:
                 set_state(False)
 
+        # Erkennungsbereich (ROI) einzeichnen, wenn er nicht das ganze Bild ist
+        if ROI != [0.0, 0.0, 1.0, 1.0]:
+            rx0, ry0 = int(ROI[0] * W_IR), int(ROI[1] * H_IR)
+            rx1, ry1 = int(ROI[2] * W_IR), int(ROI[3] * H_IR)
+            cv2.rectangle(vis, (rx0, ry0), (rx1, ry1), (255, 0, 255), 1)
+            cv2.putText(vis, "ROI", (rx0 + 3, ry0 + 15), FONT, 0.5, (255, 0, 255), 1)
+
         cv2.putText(vis, f"Modus: {mode}  (T = wechseln)", (10, 80), FONT, 0.6, (0, 255, 255), 2)
         if _calib_active:
             _steps = SIDE_STEPS if SIDE_VIEW else CALIB_STEPS
@@ -471,12 +551,12 @@ try:
                         (10, 110), FONT, 0.7, (0, 255, 0), 2)
             cv2.putText(vis, "ESC = abbrechen", (10, 135), FONT, 0.5, (0, 255, 0), 1)
         else:
-            hint = "C = Kalibrieren   T = IR/Blob"
+            hint = "C = Kalibrieren   T = IR/Blob   Ziehen = ROI   R = ROI ganz"
             if mode == "BLOB":
                 hint += "   M = Maske/Regler   S = Settings speichern"
             cv2.putText(vis, hint, (10, H_IR - 12), FONT, 0.5, (0, 255, 0), 1)
 
-        cv2.imshow("Tracking", vis)
+        cv2.imshow(TRACK_WIN, vis)
         key = cv2.waitKey(1) & 0xFF
         if key == 27:                       # ESC
             if _calib_active:
@@ -500,6 +580,9 @@ try:
             print(f"[tracking] Modus -> {mode}")
         elif key == ord('s') and not _calib_active:
             save_settings()
+        elif key == ord('r') and not _calib_active:
+            ROI[:] = [0.0, 0.0, 1.0, 1.0]   # Erkennungsbereich = ganzes Bild
+            print("[tracking] ROI zurueckgesetzt (ganzes Bild)")
         elif key == ord('m') and mode == "BLOB":
             show_mask = not show_mask
             if show_mask:
