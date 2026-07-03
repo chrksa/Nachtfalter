@@ -7,8 +7,8 @@ normierte Position als {"active":.., "x":.., "y":..} an ws://127.0.0.1:8765.
 Tasten im Tracking-Fenster:
   C          Kalibrierung starten (Mond GANZ LINKS/RECHTS/OBEN/UNTEN halten)
   Leertaste  aktuellen Kalibrier-Schritt aufnehmen
-  T          zwischen IR- und Blob-(Farb-)Tracking umschalten
-  M          im Blob-Modus die Farbmaske einblenden (zum Tunen von BLOB_HSV_*)
+  T          zwischen IR- und Blob-(Helligkeits-)Tracking umschalten
+  M          im Blob-Modus die Maske einblenden (zum Tunen von BLOB_MIN_*)
   ESC        Kalibrierung abbrechen / sonst Programm beenden
 
 Die Kalibrierung wird in calib.json gespeichert und beim nächsten Start geladen.
@@ -41,12 +41,59 @@ _calib_step = 0
 _calib = {}
 
 # --- Blob-Tracking (Farbkamera) als Alternative zum IR-Tracking ----------
-# Getrackt wird der groesste Farb-Blob im folgenden HSV-Bereich. Default deckt
-# ein kraeftiges Gelb (Mond) ab; zum Tunen im BLOB-Modus die Maske mit Taste M
-# einblenden und die Werte hier anpassen (H: 0..179, S/V: 0..255).
-BLOB_HSV_LO   = np.array((15,  60, 150), dtype=np.uint8)
-BLOB_HSV_HI   = np.array((45, 255, 255), dtype=np.uint8)
-BLOB_MIN_AREA = 30       # kleinere Blobs (Pixel) werden ignoriert
+# Getrackt wird der hellste, moeglichst runde Blob (der leuchtende Mond).
+# Es wird ueber die Helligkeit geschwellt und zusaetzlich nach Rundheit
+# gefiltert. Zum Tunen im BLOB-Modus die Maske mit Taste M einblenden und die
+# Werte hier anpassen.
+BLOB_MIN_BRIGHT = 200    # Helligkeit 0..255, dunklere Pixel werden ignoriert
+BLOB_MIN_AREA   = 30     # kleinere Blobs (Pixel) werden ignoriert
+BLOB_MIN_CIRC   = 0.60   # Rundheit 0..1 (1 = perfekter Kreis); darunter verworfen
+
+# Werden aus dieser Datei geladen/gespeichert (Taste S) und ueberschreiben dann
+# die obigen Defaults; im BLOB-Modus per Regler im Maske-Fenster einstellbar.
+SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "blob_settings.json")
+MASK_WIN = "Maske"
+
+
+def load_settings():
+    global BLOB_MIN_BRIGHT, BLOB_MIN_AREA, BLOB_MIN_CIRC
+    try:
+        d = json.load(open(SETTINGS_FILE, encoding="utf-8"))
+        BLOB_MIN_BRIGHT = int(d["bright"])
+        BLOB_MIN_AREA   = int(d["area"])
+        BLOB_MIN_CIRC   = float(d["circ"])
+        print(f"[tracking] Blob-Settings geladen: {d}")
+    except Exception:
+        print("[tracking] keine Blob-Settings -> Defaults (Taste S speichert)")
+
+
+def save_settings():
+    d = dict(bright=int(BLOB_MIN_BRIGHT), area=int(BLOB_MIN_AREA),
+             circ=round(float(BLOB_MIN_CIRC), 2))
+    try:
+        json.dump(d, open(SETTINGS_FILE, "w", encoding="utf-8"))
+        print(f"[tracking] Blob-Settings gespeichert: {d}")
+    except OSError as e:
+        print(f"[tracking] Speichern fehlgeschlagen: {e}")
+
+
+def open_mask_window():
+    """Maske-Fenster mit Reglern fuer die Blob-Settings anlegen."""
+    cv2.namedWindow(MASK_WIN)
+    cv2.createTrackbar("Hell",  MASK_WIN, int(BLOB_MIN_BRIGHT),       255,  lambda v: None)
+    cv2.createTrackbar("Area",  MASK_WIN, int(BLOB_MIN_AREA),        2000,  lambda v: None)
+    cv2.createTrackbar("Rund%", MASK_WIN, int(BLOB_MIN_CIRC * 100),   100,  lambda v: None)
+
+
+def read_mask_trackbars():
+    """Reglerstellungen in die Blob-Settings uebernehmen (falls Fenster offen)."""
+    global BLOB_MIN_BRIGHT, BLOB_MIN_AREA, BLOB_MIN_CIRC
+    try:
+        BLOB_MIN_BRIGHT = cv2.getTrackbarPos("Hell",  MASK_WIN)
+        BLOB_MIN_AREA   = cv2.getTrackbarPos("Area",  MASK_WIN)
+        BLOB_MIN_CIRC   = cv2.getTrackbarPos("Rund%", MASK_WIN) / 100.0
+    except cv2.error:
+        pass   # Fenster (noch) nicht da
 
 
 def load_calib():
@@ -176,21 +223,36 @@ def detect_ir(img, vis):
 
 
 def detect_blob(bgr):
-    """Groessten Farb-Blob im HSV-Bereich finden -> ([(u, v)], mask); Marker in bgr."""
-    hsv  = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, BLOB_HSV_LO, BLOB_HSV_HI)
+    """Hellsten, runden Blob finden -> ([(u, v)], mask); Marker in bgr."""
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, BLOB_MIN_BRIGHT, 255, cv2.THRESH_BINARY)
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
+
+    # hell genug + rund genug -> davon den groessten Blob nehmen
+    best, best_area = None, 0.0
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if area < BLOB_MIN_AREA:
+            continue
+        peri = cv2.arcLength(c, True)
+        if peri == 0:
+            continue
+        circ = 4.0 * np.pi * area / (peri * peri)   # 1.0 = perfekter Kreis
+        if circ < BLOB_MIN_CIRC:
+            continue
+        if area > best_area:
+            best, best_area = c, area
+
+    if best is None:
         return [], mask
-    c = max(cnts, key=cv2.contourArea)
-    M = cv2.moments(c)
-    if cv2.contourArea(c) < BLOB_MIN_AREA or M["m00"] == 0:
+    M = cv2.moments(best)
+    if M["m00"] == 0:
         return [], mask
     u, v = M["m10"] / M["m00"], M["m01"] / M["m00"]
-    (cx, cy), r = cv2.minEnclosingCircle(c)
+    (cx, cy), r = cv2.minEnclosingCircle(best)
     cv2.circle(bgr, (int(cx), int(cy)), int(r), (0, 255, 0), 2)
     cv2.circle(bgr, (int(u), int(v)), 4, (0, 0, 255), -1)
     return [(u, v)], mask
@@ -213,6 +275,7 @@ ds.set_option(rs.option.gain, 16)
 intr = profile.get_stream(rs.stream.infrared, 1).as_video_stream_profile().get_intrinsics()
 
 load_calib()
+load_settings()
 start_server(host="0.0.0.0")   # ans LAN binden, damit der Mac ueber Kabel verbindet
 
 mode = "IR"          # aktueller Tracking-Modus: "IR" oder "BLOB"
@@ -242,9 +305,11 @@ try:
         else:  # BLOB (Farbkamera)
             color = frames.get_color_frame()
             vis   = np.asanyarray(color.get_data()).copy()
+            if show_mask:
+                read_mask_trackbars()          # Regler -> Settings uebernehmen
             uv_list, mask = detect_blob(vis)
             if show_mask:
-                cv2.imshow("Maske", mask)
+                cv2.imshow(MASK_WIN, mask)
 
         # --- gemittelter Schwerpunkt -> normieren -> an App senden (beide Modi) ---
         last_mu = last_mv = None
@@ -263,7 +328,9 @@ try:
                         (10, 110), FONT, 0.7, (0, 255, 0), 2)
             cv2.putText(vis, "ESC = abbrechen", (10, 135), FONT, 0.5, (0, 255, 0), 1)
         else:
-            hint = "C = Kalibrieren   T = IR/Blob" + ("   M = Maske" if mode == "BLOB" else "")
+            hint = "C = Kalibrieren   T = IR/Blob"
+            if mode == "BLOB":
+                hint += "   M = Maske/Regler   S = Settings speichern"
             cv2.putText(vis, hint, (10, H_IR - 12), FONT, 0.5, (0, 255, 0), 1)
 
         cv2.imshow("Tracking", vis)
@@ -280,17 +347,22 @@ try:
             calib_capture(last_mu, last_mv)
         elif key == ord('t') and not _calib_active:
             mode = "BLOB" if mode == "IR" else "IR"
-            if mode == "IR":
+            if mode == "IR":                    # Maske gehoert nur zum BLOB-Modus
+                show_mask = False
                 try:
-                    cv2.destroyWindow("Maske")
+                    cv2.destroyWindow(MASK_WIN)
                 except Exception:
                     pass
             print(f"[tracking] Modus -> {mode}")
+        elif key == ord('s') and not _calib_active:
+            save_settings()
         elif key == ord('m') and mode == "BLOB":
             show_mask = not show_mask
-            if not show_mask:
+            if show_mask:
+                open_mask_window()              # Fenster + Regler anlegen
+            else:
                 try:
-                    cv2.destroyWindow("Maske")
+                    cv2.destroyWindow(MASK_WIN)
                 except Exception:
                     pass
 finally:
