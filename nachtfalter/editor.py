@@ -63,7 +63,7 @@ class Editor:
 
     def screen_to_uv(self, x, y):
         dw, off, H = self._dims()
-        return ((x - off) / dw) % 1.0, y / H
+        return ((x + off) / dw) % 1.0, y / H
 
     def _nearest_x(self, u, mouse_x):
         """Screen-x der u-Koordinate in der zur Maus nächsten Panorama-Kachel."""

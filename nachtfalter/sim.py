@@ -276,8 +276,10 @@ class Sim:
                     m.exposure = 0.0
                 else:
                     cx0, cs0, cy = m.captured
-                    # Quelle mit dem Panorama mitführen (gleicher Scroll-Versatz)
-                    hzx = cx0 + (self.bg_scroll - cs0)
+                    # Quelle mit dem Panorama mitführen: das Bild scrollt bei
+                    # wachsendem bg_scroll nach LINKS, also muss der Orbit-Mittelpunkt
+                    # ebenfalls nach links wandern (Minus, sonst laeuft der Schwarm weg).
+                    hzx = cx0 - (self.bg_scroll - cs0)
                     dx = hzx - m.x; dy = cy - m.y
                     d = math.hypot(dx, dy) or 1
                     # Radiale Feder: auf den Bahnradius einschwingen (erst anfliegen, dann halten)

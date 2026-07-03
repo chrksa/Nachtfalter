@@ -26,11 +26,13 @@ from arduino import ArduinoRFID
 
 def make_window(fullscreen):
     flags = pygame.FULLSCREEN | pygame.SCALED if fullscreen else pygame.RESIZABLE
+    # vsync=1 koppelt die Bildausgabe an den Beamer-Refresh -> kein Flackern/Tearing.
+    # Echtes Vsync geht mit dem SCALED-Vollbild; im Fenster ignoriert pygame den Wunsch.
     if fullscreen:
-        screen = pygame.display.set_mode((0, 0), flags)
+        screen = pygame.display.set_mode((0, 0), flags, vsync=1)
     else:
         screen = pygame.display.set_mode(
-            (config.WINDOW["width"], config.WINDOW["height"]), flags)
+            (config.WINDOW["width"], config.WINDOW["height"]), flags, vsync=1)
     pygame.mouse.set_visible(not fullscreen)
     return screen
 

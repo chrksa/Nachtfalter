@@ -36,6 +36,8 @@ CROP_Y0, CROP_Y1 = 0.0, 1.0
 CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib.json")
 
 CALIB_STEPS = ["GANZ LINKS", "GANZ RECHTS", "GANZ OBEN", "GANZ UNTEN"]
+SIDE_STEPS  = ["GANZ NAH", "GANZ FERN", "GANZ OBEN", "GANZ UNTEN"]   # seitliche Montage
+SIDE_CALIB_FILE = os.path.join(os.path.dirname(__file__), "side_calib.json")
 _calib_active = False
 _calib_step = 0
 _calib = {}
@@ -119,12 +121,35 @@ def save_calib():
 def calib_start():
     global _calib_active, _calib_step, _calib
     _calib_active, _calib_step, _calib = True, 0, {}
-    print("[tracking] Kalibrierung: Mond GANZ LINKS halten, dann Leertaste")
+    steps = SIDE_STEPS if SIDE_VIEW else CALIB_STEPS
+    print(f"[tracking] Kalibrierung: Mond {steps[0]} halten, dann Leertaste")
 
 
-def calib_capture(mu, mv):
-    """Nimmt für den aktuellen Schritt die Position auf (nur wenn ein Punkt sichtbar)."""
+def calib_capture(mu, mv, pos):
+    """Nimmt für den aktuellen Schritt die Position auf.
+
+    SIDE_VIEW: nutzt den 3D-Punkt pos (Meter) -> Z fuer nah/fern, Y fuer oben/unten.
+    sonst:     nutzt die Pixel mu/mv fuer den Kalibrier-Ausschnitt.
+    """
     global _calib_active, _calib_step, CROP_X0, CROP_X1, CROP_Y0, CROP_Y1
+    global Z_NEAR, Z_FAR, Y_TOP, Y_BOT
+
+    if SIDE_VIEW:
+        if pos is None:
+            print("[tracking] keine Tiefe/kein Punkt -> nichts aufgenommen")
+            return
+        key = ("near", "far", "top", "bot")[_calib_step]
+        _calib[key] = float(pos[2]) if key in ("near", "far") else float(pos[1])
+        _calib_step += 1
+        if _calib_step < 4:
+            print(f"[tracking] ok. Jetzt Mond {SIDE_STEPS[_calib_step]} halten, dann Leertaste")
+            return
+        Z_NEAR, Z_FAR = sorted((_calib["near"], _calib["far"]))
+        Y_TOP,  Y_BOT = sorted((_calib["top"],  _calib["bot"]))
+        _calib_active = False
+        save_side_calib()
+        return
+
     if mu is None:
         print("[tracking] kein Punkt sichtbar -> nichts aufgenommen")
         return
@@ -147,6 +172,43 @@ def normalize(u, v):
     x = (u / W_IR - CROP_X0) / (CROP_X1 - CROP_X0)
     y = (v / H_IR - CROP_Y0) / (CROP_Y1 - CROP_Y0)
     return min(1.0, max(0.0, x)), min(1.0, max(0.0, y))
+
+
+# --- Seitliche Kameramontage --------------------------------------------
+# Kamera schaut von der Seite: "naeher dran / weiter weg" (Tiefe Z) ergibt die
+# App-X-Achse, "hoch/runter" (Y) die App-Y-Achse. Braucht Tiefendaten -> nur im
+# IR-Modus. Grenzen in Metern aus der X/Y/Z-Anzeige oben im Fenster ablesen
+# (Mond an die vier Extrempositionen halten) und hier eintragen.
+SIDE_VIEW     = True
+Z_NEAR, Z_FAR = 0.40, 1.20    # Mond ganz nah / ganz weit   -> App-X 0..1
+Y_TOP, Y_BOT  = -0.30, 0.30   # Mond ganz oben / ganz unten -> App-Y (Y zeigt nach unten)
+
+
+def normalize_side(z, y):
+    """Tiefe z + Hoehe y (Meter) -> normiert 0..1 fuer die seitliche Montage."""
+    x  = (z - Z_NEAR) / (Z_FAR - Z_NEAR) if Z_FAR != Z_NEAR else 0.5
+    yy = (y - Y_TOP)  / (Y_BOT - Y_TOP)  if Y_BOT != Y_TOP else 0.5
+    return min(1.0, max(0.0, x)), min(1.0, max(0.0, yy))
+
+
+def load_side_calib():
+    global Z_NEAR, Z_FAR, Y_TOP, Y_BOT
+    try:
+        d = json.load(open(SIDE_CALIB_FILE, encoding="utf-8"))
+        Z_NEAR, Z_FAR = d["z_near"], d["z_far"]
+        Y_TOP,  Y_BOT = d["y_top"],  d["y_bot"]
+        print(f"[tracking] Seiten-Kalibrierung geladen: {d}")
+    except Exception:
+        print("[tracking] keine Seiten-Kalibrierung -> Defaults (Taste C)")
+
+
+def save_side_calib():
+    d = dict(z_near=Z_NEAR, z_far=Z_FAR, y_top=Y_TOP, y_bot=Y_BOT)
+    try:
+        json.dump(d, open(SIDE_CALIB_FILE, "w", encoding="utf-8"))
+        print(f"[tracking] Seiten-Kalibrierung gespeichert: {d}")
+    except OSError as e:
+        print(f"[tracking] Speichern fehlgeschlagen: {e}")
 
 
 # --- WebSocket-Server (sendet die Position an moon.py) ----------------
@@ -267,23 +329,74 @@ cfg.enable_stream(rs.stream.color,       848, 480, rs.format.bgr8, 30)  # RGB fu
 profile = pipe.start(cfg)
 
 ds = profile.get_device().first_depth_sensor()
-ds.set_option(rs.option.emitter_enabled, 0)          # Punktmuster aus
-ds.set_option(rs.option.enable_auto_exposure, 0)
-ds.set_option(rs.option.exposure, 800)               # runterregeln bis nur LEDs sichtbar
 ds.set_option(rs.option.gain, 16)
+try:
+    lp = ds.get_option_range(rs.option.laser_power)
+    ds.set_option(rs.option.laser_power, lp.max)     # volle Leistung -> robustere Tiefe (Emitter an)
+except Exception as e:
+    print(f"[tracking] laser_power nicht setzbar: {e}")
+
+
+def set_emitter(on):
+    """IR-Punktmuster + Depth-Belichtung modusabhaengig schalten.
+
+    on  (BLOB): Emitter an, Auto-Belichtung -> gute Tiefe.
+    off (IR):   Emitter aus, manuell kurz belichtet -> nur die Mond-LEDs.
+    """
+    try:
+        ds.set_option(rs.option.emitter_enabled, 1 if on else 0)
+        ds.set_option(rs.option.enable_auto_exposure, 1 if on else 0)
+        if not on:
+            ds.set_option(rs.option.exposure, 800)   # runterregeln bis nur LEDs sichtbar
+            ds.set_option(rs.option.gain, 16)
+        print(f"[tracking] IR-Emitter {'AN (Auto-Belichtung)' if on else 'AUS (manuell 800)'}")
+    except Exception as e:
+        print(f"[tracking] Emitter schalten fehlgeschlagen: {e}")
 
 intr = profile.get_stream(rs.stream.infrared, 1).as_video_stream_profile().get_intrinsics()
+color_intr = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
+
+# Depth auf die Farbkamera ausrichten (fuer Tiefe am Blob-Pixel) + Glaettungsfilter
+align    = rs.align(rs.stream.color)
+_spatial  = rs.spatial_filter()          # glaettet Kanten
+_temporal = rs.temporal_filter()         # glaettet ueber die Zeit -> weniger Springen
+_hole     = rs.hole_filling_filter()     # fuellt Loecher
+
+
+def blob_depth_point(frames, uv_list):
+    """Depth->Color ausrichten, filtern, Tiefe an den Blob-Pixeln abgreifen.
+
+    Rueckgabe: gemittelter 3D-Punkt (Meter, Color-Koords) oder None.
+    """
+    aligned = align.process(frames)
+    depth = aligned.get_depth_frame()
+    if not depth:
+        return None
+    for f in (_spatial, _temporal, _hole):
+        depth = f.process(depth)
+    depth = depth.as_depth_frame()
+    pts = []
+    for (u, v) in uv_list:
+        z = robust_depth(depth, u, v)
+        if z > 0:
+            pts.append(rs.rs2_deproject_pixel_to_point(color_intr, [u, v], z))
+    return np.mean(pts, axis=0) if pts else None
+
 
 load_calib()
+load_side_calib()
 load_settings()
 start_server(host="0.0.0.0")   # ans LAN binden, damit der Mac ueber Kabel verbindet
 
-mode = "IR"          # aktueller Tracking-Modus: "IR" oder "BLOB"
+mode = "BLOB"        # Hauptmodus (BLOB); IR ist Fallback, Umschalten mit T
 show_mask = False    # im BLOB-Modus die Farbmaske in extra Fenster zeigen
+set_emitter(mode == "BLOB")   # Emitter zum Startmodus passend setzen
 
 try:
     while True:
         frames = pipe.wait_for_frames()
+        side_sent = False   # True, sobald der SIDE_VIEW-Zweig schon gesendet hat
+        last_pos = None     # letzter 3D-Punkt (Meter) fuer die Kalibrierung
 
         # --- Erkennung je nach Modus -> vis (Anzeige) + uv_list (Punkte) ---
         if mode == "IR":
@@ -300,9 +413,20 @@ try:
                     pts3d.append(rs.rs2_deproject_pixel_to_point(intr, [u, v], z))
             if pts3d:
                 pos = np.mean(pts3d, axis=0)   # gemittelte Position in Metern (Kamera-Koords)
+                last_pos = pos
                 cv2.putText(vis, f"X={pos[0]:+.3f} Y={pos[1]:+.3f} Z={pos[2]:+.3f} m  (n={len(pts3d)})",
                             (10, 30), FONT, 0.6, (0, 255, 0), 1)
-        else:  # BLOB (Farbkamera)
+
+            # --- seitliche Montage: X aus Tiefe (Z), Y aus Hoehe (Y in Metern) ---
+            if SIDE_VIEW:
+                if pts3d:
+                    nx, ny = normalize_side(pos[2], pos[1])
+                    set_state(True, nx, ny)
+                    cv2.putText(vis, f"SIDE send x={nx:.2f} y={ny:.2f}", (10, 55), FONT, 0.6, (0, 255, 0), 1)
+                else:
+                    set_state(False)
+                side_sent = True
+        else:  # BLOB (Farbkamera) - Hauptmodus: 2D-Fund + Tiefe am Pixel
             color = frames.get_color_frame()
             vis   = np.asanyarray(color.get_data()).copy()
             if show_mask:
@@ -311,20 +435,39 @@ try:
             if show_mask:
                 cv2.imshow(MASK_WIN, mask)
 
-        # --- gemittelter Schwerpunkt -> normieren -> an App senden (beide Modi) ---
+            # --- seitliche Montage: Tiefe am Blob-Pixel -> X aus Z, Y aus Hoehe ---
+            if SIDE_VIEW:
+                pos = blob_depth_point(frames, uv_list) if uv_list else None
+                if pos is not None:
+                    last_pos = pos
+                    cv2.putText(vis, f"X={pos[0]:+.3f} Y={pos[1]:+.3f} Z={pos[2]:+.3f} m",
+                                (10, 30), FONT, 0.6, (0, 255, 0), 1)
+                    nx, ny = normalize_side(pos[2], pos[1])
+                    set_state(True, nx, ny)
+                    cv2.putText(vis, f"SIDE send x={nx:.2f} y={ny:.2f}", (10, 55), FONT, 0.6, (0, 255, 0), 1)
+                elif uv_list:
+                    cv2.putText(vis, "Blob gefunden, aber keine Tiefe", (10, 30), FONT, 0.6, (0, 0, 255), 2)
+                    set_state(False)
+                else:
+                    set_state(False)
+                side_sent = True
+
+        # --- gemittelter Schwerpunkt -> normieren -> an App senden (frontale Montage) ---
         last_mu = last_mv = None
-        if uv_list:
-            last_mu = sum(p[0] for p in uv_list) / len(uv_list)
-            last_mv = sum(p[1] for p in uv_list) / len(uv_list)
-            nx, ny = normalize(last_mu, last_mv)
-            set_state(True, nx, ny)
-            cv2.putText(vis, f"send x={nx:.2f} y={ny:.2f}", (10, 55), FONT, 0.6, (0, 255, 0), 1)
-        else:
-            set_state(False)
+        if not side_sent:
+            if uv_list:
+                last_mu = sum(p[0] for p in uv_list) / len(uv_list)
+                last_mv = sum(p[1] for p in uv_list) / len(uv_list)
+                nx, ny = normalize(last_mu, last_mv)
+                set_state(True, nx, ny)
+                cv2.putText(vis, f"send x={nx:.2f} y={ny:.2f}", (10, 55), FONT, 0.6, (0, 255, 0), 1)
+            else:
+                set_state(False)
 
         cv2.putText(vis, f"Modus: {mode}  (T = wechseln)", (10, 80), FONT, 0.6, (0, 255, 255), 2)
         if _calib_active:
-            cv2.putText(vis, f"KALIBRIERUNG {_calib_step + 1}/4: Mond {CALIB_STEPS[_calib_step]} halten -> LEER",
+            _steps = SIDE_STEPS if SIDE_VIEW else CALIB_STEPS
+            cv2.putText(vis, f"KALIBRIERUNG {_calib_step + 1}/4: Mond {_steps[_calib_step]} halten -> LEER",
                         (10, 110), FONT, 0.7, (0, 255, 0), 2)
             cv2.putText(vis, "ESC = abbrechen", (10, 135), FONT, 0.5, (0, 255, 0), 1)
         else:
@@ -344,9 +487,10 @@ try:
         elif key == ord('c') and not _calib_active:
             calib_start()
         elif key == ord(' ') and _calib_active:
-            calib_capture(last_mu, last_mv)
+            calib_capture(last_mu, last_mv, last_pos)
         elif key == ord('t') and not _calib_active:
             mode = "BLOB" if mode == "IR" else "IR"
+            set_emitter(mode == "BLOB")         # Emitter im BLOB-Modus an, im IR aus
             if mode == "IR":                    # Maske gehoert nur zum BLOB-Modus
                 show_mask = False
                 try:
