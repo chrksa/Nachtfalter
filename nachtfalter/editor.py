@@ -68,7 +68,7 @@ class Editor:
     def _nearest_x(self, u, mouse_x):
         """Screen-x der u-Koordinate in der zur Maus nächsten Panorama-Kachel."""
         dw, off, _ = self._dims()
-        x0 = u * dw + off - dw
+        x0 = u * dw - off - dw
         return x0 + round((mouse_x - x0) / dw) * dw
 
     # --- Treffer-Suche ---------------------------------------------
@@ -237,7 +237,7 @@ class Editor:
     # --- Zeichnen ---------------------------------------------------
     def _screen_polys(self, uvpoly):
         dw, off, H = self._dims()
-        W = self.sim.W; base_x = off - dw
+        W = self.sim.W; base_x = - off - dw
         out = []
         for k in range(int(W / dw) + 2):
             tile_x = base_x + k * dw

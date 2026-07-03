@@ -174,7 +174,7 @@ class Sim:
         dw = int(H * config.BG_ASPECT)          # identisch zur Kachelbreite im Renderer
         if dw <= 0:
             return
-        base_x = self.bg_scroll % dw - dw        # erste Kachel beginnt links außerhalb
+        base_x = base_x = (-self.bg_scroll) % dw - dw        # erste Kachel beginnt jetzt rechts außerhalb
         n_tiles = int(W / dw) + 2
         for L in config.BG_LIGHTS:
             poly_uv = L["poly"]
@@ -208,6 +208,7 @@ class Sim:
 
     # --- Hauptschritt (1:1 zur HTML) ------------------------------
     def step(self, dt, dts, mouse_inside=True, rfid_light_on=True):
+        self.dts = dts
         self.rfid_light_on = rfid_light_on
         W, H, P = self.W, self.H, self.P
 

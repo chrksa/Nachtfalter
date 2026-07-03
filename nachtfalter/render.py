@@ -76,12 +76,14 @@ class Renderer:
                 self._pano.append(img)
 
         self._bg_frames = []
-        # Frame-Animation nur laden, wenn kein Panorama vorhanden ist (spart RAM/Start).
-        if not self._pano and "animation" in config.ASSETS["bg"]:
+        # Änderung: Wir laden die Animation IMMER, damit sie als Himmel hinter dem Panorama liegt,
+        # und skalieren sie direkt flüssig auf die Render-Auflösung (self.W, self.H)
+        if "animation" in config.ASSETS["bg"]:
             for path in config.ASSETS["bg"]["animation"]:
                 img = assets.load_image(path, asset_dir)
                 if img:
-                    self._bg_frames.append(img)
+                    img_scaled = pygame.transform.smoothscale(img, (self.W, self.H))
+                    self._bg_frames.append(img_scaled)
 
     def resize(self, surface):
         self.s = surface
@@ -184,7 +186,12 @@ class Renderer:
         """Panorama seitlich scrollen (spawnt links -> nach rechts -> nahtloser Loop).
         [0] = unbeleuchtet (Basis), [1] = beleuchtet (per RFID/bg_frame eingeblendet)."""
         s, W, H = self.s, self.W, self.H
-        s.blit(self._sky_gradient(), (0, 0))   # Himmel hinter Panorama zeichnen
+        if self._bg_frames:
+            # Holt den aktuellen Index aus sim.bg_frame (wird in main.py von 0.0 bis 19.0 gezählt)
+            current_frame_idx = int(clamp(sim.bg_frame, 0, len(self._bg_frames) - 1))
+            s.blit(self._bg_frames[current_frame_idx], (0, 0))
+        else:
+            s.blit(self._sky_gradient(), (0, 0))   # Fallback, falls die Liste leer ist
 
         dw = max(1, int(H * config.BG_ASPECT))
         base = self._scaled(self._pano[0], dw, H)
@@ -197,7 +204,7 @@ class Renderer:
             self._pano_full = full
 
         # Offset aus der Sim
-        off = sim.bg_scroll % dw
+        off = (-sim.bg_scroll) % dw
         blend = clamp(sim.bg_frame / 19.0, 0.0, 1.0) if lit else 0.0
 
         # Variablen für den Zeichen-Loop vorbereiten
@@ -242,10 +249,10 @@ class Renderer:
 
         if self._pano:
             self._draw_panorama(sim)
-        elif self._bg_frames:
-            frame_idx = int(clamp(sim.bg_frame, 0, len(self._bg_frames) - 1))
-            current_bg = self._bg_frames[frame_idx]
-            s.blit(self._scaled(current_bg, W, H), (0, 0))
+        elif self._dawn_images:
+            # Falls kein Panorama da ist, spiele die Animation gestreckt ab
+            current_frame_idx = int(clamp(sim.bg_frame, 0, len(self._dawn_images) - 1))
+            s.blit(self._dawn_images[current_frame_idx], (0, 0))
         else:
             s.blit(self._sky_gradient(), (0, 0))
 

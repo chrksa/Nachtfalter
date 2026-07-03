@@ -42,7 +42,7 @@ PARAMS = dict(
     cohesion=0.00005,      # Zusammenhalt vorher 0.004
     hazardR=240,         # Basis-Radius einer Laterne in px
     deathTime=5,       # Verweildauer bis Tod in s
-    speed=0,            # Scroll-Tempo px/s
+    speed=5,            # Scroll-Tempo px/s
     spawn=3,           # Laternen-Spawnrate in s
     showField=True,      # Gefahr-Info (Radius + Beschriftung) zeichnen
 )
@@ -112,7 +112,7 @@ ASSETS = dict(
         # Wird seitlich gescrollt und nahtlos geloopt. Leere Liste -> wieder die
         # 20-Frame-Animation (animation) als Fallback.
         panorama=["background/04_Lightmockup_noBG_OFF.png", "background/04_Lightmockup_noBG_ON.png"],
-        animation=[f"background/{i:04d}.png" for i in range(1, 21)],
+        animation=[f"background/dawn/{i:04d}.png" for i in range(1, 21)],
         sky="",   # Vollbild-Himmel ohne Parallax
         show_moon=False,                  # False = gar kein Mond (auch kein Default-Mond)
         moon="",                          # optional moon

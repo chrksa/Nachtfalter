@@ -192,7 +192,27 @@ def main():
         sim.rfid_tag_on = rfid_tag_on        # fürs HUD/Button
         sim.rfid_connected = hw              # Quelle: Hardware oder Debug
 
-        sim.step(dt, dts, mouse_inside, lights_on) # <-- Lichter-Status hier übergeben
+        # --- DÄMMERUNGS-ANIMATION & SCROLL LOGIK ---
+        anim_speed = 15.0 
+        
+        if lights_on:
+            # 1. Animation läuft vorwärts bis Bild 20
+            sim.bg_frame += anim_speed * dts
+            if sim.bg_frame > 19.0:
+                sim.bg_frame = 19.0
+            
+            # 2. RICHTUNG UMDREHEN: 
+            # Durch -= zieht das Spiel die Positionen ab. Das Bild und die
+            # Lichtboxen wandern nun absolut synchron nach LINKS!
+            sim.bg_scroll -= sim.P["speed"] * dts
+        else:
+            # 1. Animation läuft rückwärts bis Bild 1
+            sim.bg_frame -= anim_speed * dts
+            if sim.bg_frame < 0.0:
+                sim.bg_frame = 0.0
+        # -------------------------------------------
+
+        sim.step(dt, dts, mouse_inside, lights_on)
         renderer.frame(sim)
         if editor.active:
             editor.draw(render_surf, fonts)
