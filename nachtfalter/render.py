@@ -437,7 +437,31 @@ class Renderer:
                      ("Überlebt", f"{sim.survived:.1f} s")):
             self.s.blit(f.render(k, True, dim), (x, y))
             vs = f.render(v, True, ink); self.s.blit(vs, (x + 150 - vs.get_width(), y)); y += 16
-        self.s.blit(f.render("H Panel · R Reset · F Vollbild · D Text Toggle · ESC", True, dim), (x, y + 4))
+
+        # --- Tracking-Status (Taste T) ----------------------------------
+        tracking_on = getattr(sim, "tracking_enabled", False)
+        self.s.blit(f.render("Tracking", True, dim), (x, y))
+        tcol = amber if tracking_on else dim
+        vs = f.render("AN" if tracking_on else "AUS", True, tcol)
+        self.s.blit(vs, (x + 150 - vs.get_width(), y)); y += 16
+
+        # --- Interaktions-Tracking: laufend (amber) bzw. letzte abgeschlossene ---
+        if getattr(sim, "interacting", False):
+            self.s.blit(f.render("Interaktion", True, amber), (x, y))
+            vs = f.render(f"{sim.interaction_time:.1f} s", True, amber)
+            self.s.blit(vs, (x + 150 - vs.get_width(), y)); y += 16
+            self.s.blit(f.render("· Falter †", True, dim), (x, y))
+            vs = f.render(str(sim.interaction_deaths), True, ink)
+            self.s.blit(vs, (x + 150 - vs.get_width(), y)); y += 16
+        elif getattr(sim, "interaction_count", 0) > 0:
+            self.s.blit(f.render("Letzte Int.", True, dim), (x, y))
+            vs = f.render(f"{sim.last_interaction_time:.1f} s", True, ink)
+            self.s.blit(vs, (x + 150 - vs.get_width(), y)); y += 16
+            self.s.blit(f.render("· Falter †", True, dim), (x, y))
+            vs = f.render(str(sim.last_interaction_deaths), True, ink)
+            self.s.blit(vs, (x + 150 - vs.get_width(), y)); y += 16
+
+        self.s.blit(f.render("H Panel · T Tracking · R Reset · F Vollbild · D Text · ESC", True, dim), (x, y + 4))
 
     def rfid_debug_button(self, sim):
         """Klickbarer Debug-Button oben rechts: schaltet den simulierten RFID-Status.

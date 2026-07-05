@@ -5,7 +5,10 @@ Wortgetreuer Port der Boids-/Laternen-/Kollisions-/Scroll-Logik.
 Reine Mathe, keine Grafik. esp32 und moon werden injiziert (siehe
 main.py), damit es keine zirkulären Importe gibt.
 """
+import csv
+import datetime
 import math
+import os
 import random
 from types import SimpleNamespace
 
@@ -69,6 +72,30 @@ class Sim:
         self.bg_scroll = 0.0          # Panorama-Scroll in Render-Pixeln (geteilt mit render)
         self.scroll_frozen = False    # Editor: Auto-Scroll aus, manuell per A/D
         self.editing = False          # Editor aktiv: Falter können nicht sterben
+
+        # --- Interaktions-Tracking (Mond angehoben -> RFID-Tag inaktiv -> Lichter AN) ---
+        # Eine Interaktion läuft, solange der Mond angehoben ist (Lichter an); genau in
+        # dieser Zeit fliegen die Falter zu den Laternen und sterben. Beim Ablegen des
+        # Mondes (RFID-Tag wieder aktiv, Lichter aus) endet sie.
+        # Das Tracking selbst wird per Taste T ein-/ausgeschaltet (nicht der RFID-Tag).
+        self.tracking_enabled = False
+        self.interacting = False
+        self.interaction_time = 0.0        # Dauer der laufenden Interaktion (s)
+        self.interaction_deaths = 0        # in der laufenden Interaktion gestorbene Falter
+        self._interaction_dead_start = 0   # deadCount beim Start der Interaktion
+        self.interaction_count = 0         # Anzahl abgeschlossener Interaktionen (pro Session)
+        self.last_interaction_time = 0.0   # Dauer der letzten abgeschlossenen Interaktion
+        self.last_interaction_deaths = 0   # Tote der letzten abgeschlossenen Interaktion
+        self._interaction_start_ts = None  # Wanduhr-Zeitstempel beim Start der Interaktion
+
+        # CSV-Log: pro abgeschlossener Interaktion eine Zeile in logs/interaktionen.csv.
+        # Die Datei liegt neben diesem Skript, unabhängig vom Arbeitsverzeichnis.
+        _base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.log_dir = os.path.join(_base_dir, "logs")
+        self.log_path = os.path.join(self.log_dir, "interaktionen.csv")
+        self._log_id = 0                   # fortlaufende ID (auch über Neustarts hinweg)
+        self._ensure_log_file()
+
         self.spawn_swarm()
 
         if not config.USE_BG_LIGHTS:
@@ -114,6 +141,15 @@ class Sim:
         self.hazards = []; self.embers = []
         self.deadCount = 0; self.survived = 0.0; self.spawnTimer = 0.0
         self.gameOver = False
+
+        # Interaktions-Tracking ebenfalls zurücksetzen
+        self.interacting = False
+        self.interaction_time = 0.0
+        self.interaction_deaths = 0
+        self._interaction_dead_start = 0
+        self.interaction_count = 0
+        self.last_interaction_time = 0.0
+        self.last_interaction_deaths = 0
 
         if not config.USE_BG_LIGHTS:
             for _ in range(4):
@@ -206,11 +242,86 @@ class Sim:
         if self.esp32:
             self.esp32.send_death()
 
+    # --- CSV-Log --------------------------------------------------
+    def _ensure_log_file(self):
+        """Legt den Log-Ordner an und schreibt die Kopfzeile, falls die CSV neu ist.
+        Existiert die Datei schon, wird die höchste bereits vergebene ID gelesen,
+        damit die IDs über Programm-Neustarts hinweg fortlaufend bleiben."""
+        try:
+            os.makedirs(self.log_dir, exist_ok=True)
+            if os.path.exists(self.log_path):
+                with open(self.log_path, newline="", encoding="utf-8") as fh:
+                    rows = list(csv.reader(fh))
+                # Alle Zeilen minus Kopfzeile = zuletzt vergebene ID
+                self._log_id = max(0, len(rows) - 1)
+            else:
+                with open(self.log_path, "w", newline="", encoding="utf-8") as fh:
+                    csv.writer(fh).writerow(
+                        ["id", "start", "ende", "dauer_s", "gestorbene_falter"])
+        except OSError as e:
+            print(f"[Log] Konnte Log-Datei nicht vorbereiten: {e}")
+
+    def _log_interaction(self):
+        """Hängt die gerade beendete Interaktion als eine Zeile an die CSV an."""
+        self._log_id += 1
+        start = self._interaction_start_ts
+        end = datetime.datetime.now()
+        row = [
+            self._log_id,
+            start.isoformat(timespec="seconds") if start else "",
+            end.isoformat(timespec="seconds"),
+            f"{self.interaction_time:.1f}",
+            self.interaction_deaths,
+        ]
+        try:
+            with open(self.log_path, "a", newline="", encoding="utf-8") as fh:
+                csv.writer(fh).writerow(row)
+        except OSError as e:
+            print(f"[Log] Konnte Interaktion nicht speichern: {e}")
+
+    # --- Interaktions-Tracking ------------------------------------
+    def _track_interaction(self, rfid_light_on, dts):
+        """Misst pro Interaktion (Mond angehoben = Lichter AN) die Dauer und wie
+        viele Falter in dieser Zeit sterben. Startet, sobald der Mond angehoben
+        wird (RFID-Tag inaktiv), und endet beim Ablegen (RFID-Tag wieder aktiv).
+        Läuft nur, wenn das Tracking per Taste T aktiviert ist."""
+        if not self.tracking_enabled:
+            # Tracking aus -> eine evtl. laufende Messung wird verworfen
+            self.interacting = False
+            return
+        if rfid_light_on and not self.interacting:
+            # Interaktion beginnt: Mond angehoben, Lichter gehen an
+            self.interacting = True
+            self.interaction_time = 0.0
+            self.interaction_deaths = 0
+            self._interaction_dead_start = self.deadCount
+            self._interaction_start_ts = datetime.datetime.now()
+        elif self.interacting and not rfid_light_on:
+            # Interaktion endet: Mond abgelegt, RFID-Tag wieder aktiv
+            self.interaction_time += dts
+            self.interaction_deaths = self.deadCount - self._interaction_dead_start
+            self.interacting = False
+            self.interaction_count += 1
+            self.last_interaction_time = self.interaction_time
+            self.last_interaction_deaths = self.interaction_deaths
+            self._log_interaction()
+            print(f"[Interaktion #{self._log_id}] "
+                  f"Dauer: {self.interaction_time:.1f}s · "
+                  f"gestorbene Falter: {self.interaction_deaths} "
+                  f"-> {self.log_path}")
+        elif self.interacting:
+            # Laufende Interaktion fortschreiben
+            self.interaction_time += dts
+            self.interaction_deaths = self.deadCount - self._interaction_dead_start
+
     # --- Hauptschritt (1:1 zur HTML) ------------------------------
     def step(self, dt, dts, mouse_inside=True, rfid_light_on=True):
         self.dts = dts
         self.rfid_light_on = rfid_light_on
         W, H, P = self.W, self.H, self.P
+
+        # Interaktion tracken (Mond angehoben <-> abgelegt)
+        self._track_interaction(rfid_light_on, dts)
 
         # bg_frame 0..19: Lichter AN -> vorwärts (ON-Bild), sonst zurück (OFF-Bild)
         if not self.gameOver:

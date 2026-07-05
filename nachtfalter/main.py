@@ -5,7 +5,7 @@ Startet alles. Verdrahtet esp32, moon, sim, renderer und fährt die
 Hauptschleife. Steuerung:
   H   HUD ein/aus        R   Schwarm zurücksetzen
   F   Vollbild wechseln  D   Debug-Overlay (Lichtquellen)
-  T   RFID simulieren    E   Lichtquellen-Editor
+  T   Tracking an/aus    E   Lichtquellen-Editor
   Maus = Leitlicht (wenn kein Mond-Tracking aktiv ist)
 
 Start:  python main.py
@@ -26,13 +26,11 @@ from arduino import ArduinoRFID
 
 def make_window(fullscreen):
     flags = pygame.FULLSCREEN | pygame.SCALED if fullscreen else pygame.RESIZABLE
-    # vsync=1 koppelt die Bildausgabe an den Beamer-Refresh -> kein Flackern/Tearing.
-    # Echtes Vsync geht mit dem SCALED-Vollbild; im Fenster ignoriert pygame den Wunsch.
     if fullscreen:
-        screen = pygame.display.set_mode((0, 0), flags, vsync=1)
+        screen = pygame.display.set_mode((0, 0), flags)
     else:
         screen = pygame.display.set_mode(
-            (config.WINDOW["width"], config.WINDOW["height"]), flags, vsync=1)
+            (config.WINDOW["width"], config.WINDOW["height"]), flags)
     pygame.mouse.set_visible(not fullscreen)
     return screen
 
@@ -82,7 +80,6 @@ def main():
     running = True
     while running:
         # Maus -> Leitlicht (Fallback). Fenster- in Render-Koordinaten.
-
         mx, my = pygame.mouse.get_pos()
         mouse_inside = pygame.mouse.get_focused() == 1
         # Im Editor ist die Maus zum Bearbeiten da, nicht als Leitlicht.
@@ -141,7 +138,9 @@ def main():
                 if ev.key in (pygame.K_ESCAPE, pygame.K_q):
                     running = False
                 elif ev.key == pygame.K_t:
-                    rfid_sim_on = not rfid_sim_on
+                    # T schaltet das Interaktions-Tracking ein/aus (nicht den RFID-Tag)
+                    sim.tracking_enabled = not sim.tracking_enabled
+                    print(f"[Tracking] {'AN' if sim.tracking_enabled else 'AUS'}")
                 elif ev.key == pygame.K_e:
                     editor.toggle()
                 elif ev.key == pygame.K_n and editor.active:
@@ -194,27 +193,7 @@ def main():
         sim.rfid_tag_on = rfid_tag_on        # fürs HUD/Button
         sim.rfid_connected = hw              # Quelle: Hardware oder Debug
 
-        # --- DÄMMERUNGS-ANIMATION & SCROLL LOGIK ---
-        anim_speed = 15.0 
-        
-        if lights_on:
-            # 1. Animation läuft vorwärts bis Bild 20
-            sim.bg_frame += anim_speed * dts
-            if sim.bg_frame > 19.0:
-                sim.bg_frame = 19.0
-            
-            # 2. RICHTUNG UMDREHEN: 
-            # Durch -= zieht das Spiel die Positionen ab. Das Bild und die
-            # Lichtboxen wandern nun absolut synchron nach LINKS!
-            sim.bg_scroll -= sim.P["speed"] * dts
-        else:
-            # 1. Animation läuft rückwärts bis Bild 1
-            sim.bg_frame -= anim_speed * dts
-            if sim.bg_frame < 0.0:
-                sim.bg_frame = 0.0
-        # -------------------------------------------
-
-        sim.step(dt, dts, mouse_inside, lights_on)
+        sim.step(dt, dts, mouse_inside, lights_on) # <-- Lichter-Status hier übergeben
         renderer.frame(sim)
         if editor.active:
             editor.draw(render_surf, fonts)
