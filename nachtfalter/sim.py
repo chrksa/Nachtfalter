@@ -73,6 +73,10 @@ class Sim:
         self.scroll_frozen = False    # Editor: Auto-Scroll aus, manuell per A/D
         self.editing = False          # Editor aktiv: Falter können nicht sterben
 
+        # --- RFID Zustände ---
+        self.rfid_tag_on = False
+        self.last_rfid_tag_on = False  # NEU: Zustand des letzten Frames für Flankensteuerung merken
+
         # --- Interaktions-Tracking (Mond angehoben -> RFID-Tag inaktiv -> Lichter AN) ---
         # Eine Interaktion läuft, solange der Mond angehoben ist (Lichter an); genau in
         # dieser Zeit fliegen die Falter zu den Laternen und sterben. Beim Ablegen des
@@ -320,6 +324,14 @@ class Sim:
         self.rfid_light_on = rfid_light_on
         W, H, P = self.W, self.H, self.P
 
+        # GameOver Überprüfung am Anfang ---
+        if self.gameOver:
+            if self.rfid_tag_on and not self.last_rfid_tag_on:
+                self.reset()  # Mond wurde gerade aufgelegt -> Einmaliger Reset
+            else:
+                self.last_rfid_tag_on = self.rfid_tag_on
+                return  # Blockiert den Rest der Simulation im GameOver
+
         # Interaktion tracken (Mond angehoben <-> abgelegt)
         self._track_interaction(rfid_light_on, dts)
 
@@ -527,6 +539,9 @@ class Sim:
             alive = sum(1 for m in self.moths if m.dying == 0)
             if alive == 0:
                 self.gameOver = True
+        
+        # Zustand am Ende des normalen Loops für den nächsten Frame festhalten
+        self.last_rfid_tag_on = self.rfid_tag_on
 
     def alive_count(self):
         return sum(1 for m in self.moths if m.dying == 0)

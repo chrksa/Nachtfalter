@@ -163,6 +163,7 @@ def main():
                     sim.P["showField"] = not sim.P["showField"]
                 elif ev.key == pygame.K_r:
                     sim.reset()
+                    renderer.reset_animation()
                 elif ev.key == pygame.K_f:
                     fullscreen = not fullscreen
                     screen = make_window(fullscreen)
@@ -192,6 +193,10 @@ def main():
         lights_on = not rfid_tag_on
         sim.rfid_tag_on = rfid_tag_on        # fürs HUD/Button
         sim.rfid_connected = hw              # Quelle: Hardware oder Debug
+
+        # --- Wenn das Spiel vorbei war und JETZT durch den RFID-Sensor resettet wird ---
+        if sim.gameOver and rfid_tag_on:
+            renderer.reset_animation()  # Setzt die Kreis-Animation für das nächste Mal auf 0
 
         sim.step(dt, dts, mouse_inside, lights_on) # <-- Lichter-Status hier übergeben
         renderer.frame(sim)
