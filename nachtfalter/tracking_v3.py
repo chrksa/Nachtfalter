@@ -253,6 +253,47 @@ CALIB_FILE = os.path.join(BASE, "homography_calib_v3.json")
 CALIB_STEPS = ["OBEN LINKS", "OBEN RECHTS", "UNTEN RECHTS", "UNTEN LINKS"]
 DST_PTS = np.float32([[0, 0], [1, 0], [1, 1], [0, 1]])
 
+# --- 3D-Triangulation ------------------------------------------------
+# Physisches Seitenverhaeltnis (Breite/Hoehe) des Spielfeld-Rechtecks, das
+# du in die 4 Ecken kalibrierst. Nur das VERHAELTNIS zaehlt, nicht die Groesse.
+# Fuer die Triangulation moeglichst genau messen (Standard 16:9).
+FIELD_ASPECT = 16.0 / 9.0
+
+# Die 4 Ecken als 3D-Weltpunkte auf der Ebene Z=0 (Reihenfolge = CALIB_STEPS).
+# Breite = 1, Hoehe = 1/AR -> Weltframe teilt sich beide Kameras.
+_FH = 1.0 / FIELD_ASPECT
+OBJ_PTS = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+                    [1.0, _FH, 0.0], [0.0, _FH, 0.0]], np.float64).reshape(-1, 1, 3)
+
+# Wenn die zwei Sichtstrahlen weiter als das voneinander entfernt sind (in
+# Weltbreiten), gilt die Triangulation als unsicher (Fehlpaarung/Rauschen).
+TRI_MAX_RESIDUAL = 0.15
+
+
+def triangulate(rayA, rayB):
+    """Zwei Weltstrahlen (C, d) -> (nx, ny, residual) in Spielkoordinaten.
+
+    Schneidet die Strahlen (kuerzeste Verbindung), projiziert den Mittelpunkt
+    senkrecht auf die Ebene Z=0 und normiert auf 0..1. Z faellt dabei raus."""
+    C1, d1 = rayA
+    C2, d2 = rayB
+    b = float(d1 @ d2)
+    denom = 1.0 - b * b
+    if denom < 1e-6:                       # Strahlen fast parallel -> nutzlos
+        return None
+    w0 = C1 - C2
+    dd = float(d1 @ w0)
+    ee = float(d2 @ w0)
+    s = (b * ee - dd) / denom
+    t = (ee - b * dd) / denom
+    p1 = C1 + s * d1
+    p2 = C2 + t * d2
+    P = 0.5 * (p1 + p2)
+    resid = float(np.linalg.norm(p1 - p2))
+    nx = min(1.0, max(0.0, float(P[0])))
+    ny = min(1.0, max(0.0, float(P[1]) * FIELD_ASPECT))
+    return nx, ny, resid
+
 
 def _rect_norm(p0, p1):
     x0, x1 = sorted((p0[0], p1[0])); y0, y1 = sorted((p0[1], p1[1]))
@@ -282,6 +323,9 @@ class RealSenseCamera:
         self._src_pts = {"BLOB": None, "IR": None}   # je 4 Pixelpunkte
         self._H = {"BLOB": None, "IR": None}         # Pixel -> Spielkoord
         self._Hinv = {"BLOB": None, "IR": None}      # Spielkoord -> Pixel
+        self._pose = {"BLOB": None, "IR": None}      # 3D-Lage (R, Rt, C) je Modus
+        self.K = {}                                  # Intrinsik-Matrix je Modus
+        self.dist = {}                               # Verzeichnung je Modus
 
         # --- Pipeline nur fuer DIESE Kamera ---
         self.pipe = rs.pipeline()
@@ -293,6 +337,7 @@ class RealSenseCamera:
         self.profile = self.pipe.start(cfg)
         self._rgb_sensor = None
         self._setup_sensors()
+        self._read_intrinsics()
 
         # --- Aufnahme-Thread: haelt immer den neuesten Frame bereit ---
         self._latest = None                # (color_bgr, ir_gray_or_None)
@@ -369,6 +414,22 @@ class RealSenseCamera:
         except Exception:
             pass
 
+    # -- Kamera-Intrinsik (fuer 3D-Strahlen) --
+    def _read_intrinsics(self):
+        streams = [("BLOB", rs.stream.color, 0)]
+        if ENABLE_IR:
+            streams.append(("IR", rs.stream.infrared, 1))
+        for m, strm, idx in streams:
+            try:
+                vp = self.profile.get_stream(strm, idx).as_video_stream_profile()
+                i = vp.get_intrinsics()
+                self.K[m] = np.array([[i.fx, 0, i.ppx],
+                                      [0, i.fy, i.ppy],
+                                      [0, 0, 1]], np.float64)
+                self.dist[m] = np.array(i.coeffs, np.float64)
+            except Exception as e:
+                print(f"[{self.label}] Intrinsik {m} nicht lesbar: {e}")
+
     # -- Homographie --
     def _rebuild_h(self, m):
         pts = self._src_pts.get(m)
@@ -398,9 +459,54 @@ class RealSenseCamera:
         p = cv2.perspectiveTransform(np.float32([[[gx, gy]]]), self._Hinv[m])[0, 0]
         return float(p[0]), float(p[1])
 
+    def _rebuild_pose(self, m):
+        """Aus den 4 Ecken die 3D-Lage der Kamera bestimmen (solvePnP)."""
+        pts = self._src_pts.get(m)
+        K = self.K.get(m)
+        if pts is None or len(pts) != 4 or K is None:
+            self._pose[m] = None
+            return
+        img = np.array(pts, np.float64).reshape(-1, 1, 2)
+        dist = self.dist.get(m, np.zeros(5))
+        # SQPNP ist bei schraeger Montage robuster als IPPE (keine falsche
+        # Loesung der planaren Pose-Mehrdeutigkeit); ITERATIVE als Rueckfall.
+        ok = False
+        for flag in (cv2.SOLVEPNP_SQPNP, cv2.SOLVEPNP_ITERATIVE):
+            try:
+                ok, rvec, tvec = cv2.solvePnP(OBJ_PTS, img, K, dist, flags=flag)
+            except cv2.error:
+                ok = False
+            if ok:
+                break
+        if not ok:
+            self._pose[m] = None
+            return
+        R, _ = cv2.Rodrigues(rvec)
+        C = (-R.T @ tvec).reshape(3)
+        self._pose[m] = dict(R=R, Rt=R.T, C=C)
+
+    def has_pose(self, m):
+        return self._pose.get(m) is not None
+
+    def ray(self, u, v, m):
+        """Pixel -> Weltstrahl (C, d) fuer die Triangulation, oder None."""
+        pose = self._pose.get(m)
+        K = self.K.get(m)
+        if pose is None or K is None:
+            return None
+        dist = self.dist.get(m, np.zeros(5))
+        und = cv2.undistortPoints(np.array([[[u, v]]], np.float64), K, dist)
+        xn, yn = und[0, 0]
+        d = pose["Rt"] @ np.array([xn, yn, 1.0])
+        n = np.linalg.norm(d)
+        if n < 1e-9:
+            return None
+        return pose["C"], d / n
+
     def set_calib(self, m, pts):
         self._src_pts[m] = list(pts)
         self._rebuild_h(m)
+        self._rebuild_pose(m)
 
     def src_pts(self, m):
         return self._src_pts[m]
@@ -763,7 +869,7 @@ def calib_capture(raw_by_cam, mode):
               f"{', '.join(missing)} -> Ecke wiederholen (Mond muss in ALLEN Bildern sein)")
         return
     for cam in _calib_pts:
-        u, v = raw_by_cam[cam]
+        u, v = raw_by_cam[cam][:2]
         _calib_pts[cam].append([float(u), float(v)])
     _calib_step += 1
     if _calib_step < 4:
@@ -833,20 +939,37 @@ try:
             if show_mask and cam is focus and mask is not None:
                 cv2.imshow(MASK_WIN, render_mask_view(mask, focus))
 
-        # --- Kandidaten beider Kameras in Spielkoordinaten zusammenfuehren ---
-        calibrated = [cam for cam in CAMS if cam.H(mode) is not None]
-        sources = calibrated if calibrated else CAMS[:1]
-        fused = []
-        for cam, vis, cands in per_cam:
-            if cam not in sources:
-                continue
-            for (u, v, score) in cands:
-                gx, gy = cam.to_game(u, v, mode)
-                fused.append((gx, gy, score))
-
-        # rohe beste Detektion PRO Kamera (fuer die gemeinsame Kalibrierung)
-        raw_by_cam = {cam: (max(cands, key=lambda c: c[2])[:2] if cands else None)
+        # rohe beste Detektion PRO Kamera (fuer Kalibrierung + Triangulation)
+        raw_by_cam = {cam: (max(cands, key=lambda c: c[2]) if cands else None)
                       for cam, _, cands in per_cam}
+
+        # --- Position bestimmen ---
+        # Bevorzugt 3D-TRIANGULATION: sehen >=2 kalibrierte Kameras den Mond,
+        # schneiden sich ihre Sichtstrahlen im echten 3D-Punkt -> Hoehe (Z)
+        # faellt raus. Sonst Rueckfall auf die (ebene) Homographie-Fusion.
+        fused = []
+        tri = None                         # (nx, ny, residual) wenn trianguliert
+        posed = [(cam, raw_by_cam[cam]) for cam in CAMS
+                 if cam.has_pose(mode) and raw_by_cam.get(cam) is not None]
+        if len(posed) >= 2:
+            (camA, bA), (camB, bB) = posed[0], posed[1]
+            rA = camA.ray(bA[0], bA[1], mode)
+            rB = camB.ray(bB[0], bB[1], mode)
+            if rA is not None and rB is not None:
+                res = triangulate(rA, rB)
+                if res is not None and res[2] <= TRI_MAX_RESIDUAL:
+                    tri = res
+                    fused.append((res[0], res[1], bA[2] + bB[2]))
+
+        if not fused:                      # Rueckfall: ebene Homographie
+            calibrated = [cam for cam in CAMS if cam.H(mode) is not None]
+            sources = calibrated if calibrated else CAMS[:1]
+            for cam, _, cands in per_cam:
+                if cam not in sources:
+                    continue
+                for (u, v, score) in cands:
+                    gx, gy = cam.to_game(u, v, mode)
+                    fused.append((gx, gy, score))
 
         # --- gemeinsamer Tracker im Spielkoordinaten-Raum ---
         tp = tracker.update(fused, dt)     # (x, y) in 0..1 oder None
@@ -862,7 +985,8 @@ try:
                 px, py = cam.from_game(tp[0], tp[1], mode)
                 if -50 <= px <= W_IMG + 50 and -50 <= py <= H_IMG + 50:
                     cv2.circle(vis, (int(px), int(py)), 8, (0, 255, 0), 2)
-                cv2.putText(vis, f"send x={tp[0]:.2f} y={tp[1]:.2f}",
+                src_tag = f"3D-Tri (res {tri[2]:.2f})" if tri is not None else "2D-Homogr."
+                cv2.putText(vis, f"send x={tp[0]:.2f} y={tp[1]:.2f}  [{src_tag}]",
                             (10, 55), FONT, 0.6, (0, 255, 0), 1)
             else:
                 cv2.putText(vis, "kein Mond", (10, 55), FONT, 0.6, (0, 0, 255), 1)
