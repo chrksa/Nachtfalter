@@ -1,0 +1,1 @@
+{"area": 235, "area_max": 20000, "circ": 0.28, "fill": 0.7, "color_on": 0, "hue_min": 0, "hue_max": 61, "sat_max": 0, "cameras": {"047322071163": {"bright": 14, "exposure": 100, "gain": 16, "roi": [0.0, 0.0, 1.0, 1.0], "excludes": []}, "049122251150": {"bright": 34, "exposure": 100, "gain": 16, "roi": [0.0, 0.0, 1.0, 1.0], "excludes": []}}}

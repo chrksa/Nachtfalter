@@ -160,8 +160,8 @@ ARDUINO = dict(
 MOON = dict(
     enabled=True,
     url="ws://127.0.0.1:8765",
-    flipX=True,
-    flipY=False,
+    flipX=True,         # Beamer spiegelt links/rechts -> horizontal spiegeln
+    flipY=False,        # obere Kalibrier-Ecke = obere Ecke im Spiel
     smooth=0.5,         # Trägheit pro Frame (0=träge/sehr weich .. 1=hart/sofort)
     maxJump=0.5,         # Ausreißer-Schwelle (normalisiert 0..1): groesserer Sprung -> erst bestaetigen
     confirm=2,           # so viele Messages muss ein Sprung halten, sonst verworfen
