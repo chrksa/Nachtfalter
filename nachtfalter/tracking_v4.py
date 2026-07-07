@@ -213,6 +213,9 @@ IR_THRESH   = 200        # Helligkeits-Schwelle fuer LED-Erkennung 0..255
 IR_EXPOSURE = 4000        # feste Belichtung der IR/Stereo-Kamera (RealSense-Rohwert)
 DEPTH_WIN   = 9          # Kantenlaenge des Tiefen-Messfensters (Pixel)
 DEPTH_MIN_VALID = 0.25   # Mindestanteil gueltiger Tiefen-Pixel im Fenster
+DEPTH_PCT   = 20         # Perzentil der Tiefe im Fenster: NIEDRIG = naechste
+                         # Flaeche (Mond), ignoriert weiter entfernten Hintergrund.
+                         # 50 = Median (alt), 20 = vorderste 20 %.
 
 ROI = [0.0, 0.0, 1.0, 1.0]
 EXCLUDES = []
@@ -224,13 +227,14 @@ CALIB_FILE = os.path.join(BASE, "tracking_v4_calib.json")
 
 
 def load_settings():
-    global IR_THRESH, IR_EXPOSURE, DEPTH_WIN, DEPTH_MIN_VALID
+    global IR_THRESH, IR_EXPOSURE, DEPTH_WIN, DEPTH_MIN_VALID, DEPTH_PCT
     try:
         d = json.load(open(SETTINGS_FILE, encoding="utf-8"))
         IR_THRESH   = int(d.get("thresh", IR_THRESH))
         IR_EXPOSURE = int(d.get("exposure", IR_EXPOSURE))
         DEPTH_WIN   = int(d.get("depth_win", DEPTH_WIN))
         DEPTH_MIN_VALID = float(d.get("depth_min_valid", DEPTH_MIN_VALID))
+        DEPTH_PCT   = int(d.get("depth_pct", DEPTH_PCT))
         if isinstance(d.get("roi"), list) and len(d["roi"]) == 4:
             ROI[:] = [float(c) for c in d["roi"]]
         if isinstance(d.get("excludes"), list):
@@ -243,6 +247,7 @@ def load_settings():
 def save_settings():
     d = dict(thresh=int(IR_THRESH), exposure=int(IR_EXPOSURE),
              depth_win=int(DEPTH_WIN), depth_min_valid=round(float(DEPTH_MIN_VALID), 2),
+             depth_pct=int(DEPTH_PCT),
              roi=[round(c, 4) for c in ROI],
              excludes=[[round(c, 4) for c in r] for r in EXCLUDES])
     try:
@@ -258,15 +263,17 @@ def open_mask_window():
     cv2.createTrackbar("Exp",      MASK_WIN, int(IR_EXPOSURE),        20000, lambda v: None)
     cv2.createTrackbar("TiefeWin", MASK_WIN, int(DEPTH_WIN),             41, lambda v: None)
     cv2.createTrackbar("Gueltig%", MASK_WIN, int(DEPTH_MIN_VALID * 100), 100, lambda v: None)
+    cv2.createTrackbar("TiefePct", MASK_WIN, int(DEPTH_PCT),            100, lambda v: None)
 
 
 def read_mask_trackbars():
-    global IR_THRESH, IR_EXPOSURE, DEPTH_WIN, DEPTH_MIN_VALID
+    global IR_THRESH, IR_EXPOSURE, DEPTH_WIN, DEPTH_MIN_VALID, DEPTH_PCT
     try:
         IR_THRESH   = cv2.getTrackbarPos("Schwelle", MASK_WIN)
         IR_EXPOSURE = max(1, cv2.getTrackbarPos("Exp", MASK_WIN))
         DEPTH_WIN   = max(3, cv2.getTrackbarPos("TiefeWin", MASK_WIN) | 1)  # ungerade
         DEPTH_MIN_VALID = cv2.getTrackbarPos("Gueltig%", MASK_WIN) / 100.0
+        DEPTH_PCT   = max(1, cv2.getTrackbarPos("TiefePct", MASK_WIN))
     except cv2.error:
         pass
 
@@ -364,7 +371,10 @@ def sample_depth(depth_m, u, v):
     ratio = valid.size / patch.size
     if valid.size == 0 or ratio < DEPTH_MIN_VALID:
         return None, ratio
-    return float(np.median(valid)), ratio
+    # NAECHSTE Flaeche statt Median: der Mond ist immer das vorderste Objekt,
+    # so zieht weiter entfernter Hintergrund (bes. bei LED-Saettigungsloechern
+    # nah an der Kamera) den Wert nicht mehr Richtung "fern".
+    return float(np.percentile(valid, DEPTH_PCT)), ratio
 
 
 def measure(u, v, Z, intrin):

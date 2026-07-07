@@ -1,0 +1,1 @@
+{"thresh": 200, "exposure": 4000, "depth_win": 9, "depth_min_valid": 0.25, "depth_pct": 20, "roi": [0.0, 0.0, 1.0, 1.0], "excludes": []}
