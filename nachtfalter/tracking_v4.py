@@ -10,8 +10,9 @@ bestimmt und daraus:
 
 Eine 4-Punkt-Kalibrierung der EXTREME legt die Spielkoordinaten fest:
   fern/max-Hoehe, nah/max-Hoehe, nah/tiefste-Hoehe, fern/tiefste-Hoehe.
-Daraus wird eine Homographie im (Distanz, Hoehe)-Raum gebaut, die den
-Messvektor projektiv auf Spiel 0..1 abbildet.
+Daraus wird JE ACHSE unabhaengig linear normiert (nah->0/fern->1 waagerecht,
+max-Hoehe->0/tiefste->1 senkrecht) -> erreicht garantiert 0 und 1 an den
+Extremen. Die Bildschirm-Seite (links/rechts) stellt flipX in config.py.
 
 Tasten:
   C          Kalibrierung starten (4 Extreme aufnehmen)
@@ -395,26 +396,35 @@ def measure(u, v, Z, intrin):
 # 4-Punkt-Kalibrierung im (Distanz, Hoehe)-Raum
 # =====================================================================
 CALIB_STEPS = [
-    "FERN, MAX. HOEHE",     # -> (0,0) links-oben
-    "NAH,  MAX. HOEHE",     # -> (1,0) rechts-oben  (nah = rechts)
-    "NAH,  TIEFSTE HOEHE",  # -> (1,1) rechts-unten
-    "FERN, TIEFSTE HOEHE",  # -> (0,1) links-unten
+    "FERN, MAX. HOEHE",     # fern -> gx=1,  max Hoehe -> gy=0 (oben)
+    "NAH,  MAX. HOEHE",     # nah  -> gx=0,  max Hoehe -> gy=0
+    "NAH,  TIEFSTE HOEHE",  # nah  -> gx=0,  min Hoehe -> gy=1 (unten)
+    "FERN, TIEFSTE HOEHE",  # fern -> gx=1,  min Hoehe -> gy=1
 ]
-DST_PTS = np.float32([[0, 0], [1, 0], [1, 1], [0, 1]])
 
-_src_pts = None          # 4 Messvektoren (distance, height)
-_H = None                # Homographie (Distanz,Hoehe) -> Spiel 0..1
+_src_pts = None          # 4 Messvektoren (distance, height) an den Extremen
+_ranges = None           # (d_near, d_far, h_hi, h_lo) fuer lineare Normierung
 _calib_active = False
 _calib_step = 0
 _calib_pts = []
 
 
-def _rebuild_h():
-    global _H
-    if _src_pts is not None and len(_src_pts) == 4:
-        _H = cv2.getPerspectiveTransform(np.float32(_src_pts), DST_PTS)
-    else:
-        _H = None
+def _rebuild_ranges():
+    """Aus den 4 Extrem-Messungen je Achse Min/Max ableiten. Jede Achse wird
+    dann UNABHAENGIG linear normiert -> erreicht garantiert 0 und 1.
+
+    Schritte: 0 fern-maxH, 1 nah-maxH, 2 nah-minH, 3 fern-minH."""
+    global _ranges
+    if _src_pts is None or len(_src_pts) != 4:
+        _ranges = None
+        return
+    Z = [p[0] for p in _src_pts]
+    Hh = [p[1] for p in _src_pts]
+    d_far  = (Z[0] + Z[3]) / 2.0     # Mittel der beiden FERN-Punkte
+    d_near = (Z[1] + Z[2]) / 2.0     # Mittel der beiden NAH-Punkte
+    h_hi   = (Hh[0] + Hh[1]) / 2.0   # Mittel der beiden MAX-HOEHE-Punkte
+    h_lo   = (Hh[2] + Hh[3]) / 2.0   # Mittel der beiden MIN-HOEHE-Punkte
+    _ranges = (d_near, d_far, h_hi, h_lo)
 
 
 def load_calib():
@@ -424,7 +434,7 @@ def load_calib():
         pts = d.get("points")
         if isinstance(pts, list) and len(pts) == 4:
             _src_pts = [[float(p[0]), float(p[1])] for p in pts]
-            _rebuild_h()
+            _rebuild_ranges()
             print(f"[tracking] Kalibrierung geladen: {_src_pts}")
         else:
             print("[tracking] Kalibrier-Datei unvollstaendig -> Taste C")
@@ -462,7 +472,7 @@ def calib_capture(m):
         print(f"[tracking] ok. Jetzt {CALIB_STEPS[_calib_step]}, dann Leertaste")
         return
     _src_pts = list(_calib_pts)
-    _rebuild_h()
+    _rebuild_ranges()
     _calib_active = False
     save_calib()
     tracker.reset()
@@ -470,11 +480,19 @@ def calib_capture(m):
 
 
 def to_game(m):
-    """Messvektor (distance, height) -> Spielkoordinaten (gx, gy) oder None."""
-    if _H is None or m is None:
+    """Messvektor (distance, height) -> Spielkoordinaten (gx, gy) oder None.
+
+    Jede Achse UNABHAENGIG linear zwischen den kalibrierten Extremen:
+      waagerecht: nah -> gx=0, fern -> gx=1
+      senkrecht:  max Hoehe -> gy=0, tiefste Hoehe -> gy=1"""
+    if _ranges is None or m is None:
         return None
-    p = cv2.perspectiveTransform(np.float32([[[m[0], m[1]]]]), _H)[0, 0]
-    return float(min(1.0, max(0.0, p[0]))), float(min(1.0, max(0.0, p[1])))
+    d_near, d_far, h_hi, h_lo = _ranges
+    dd = d_far - d_near
+    dh = h_lo - h_hi
+    gx = (m[0] - d_near) / dd if abs(dd) > 1e-9 else 0.5
+    gy = (m[1] - h_hi) / dh if abs(dh) > 1e-9 else 0.5
+    return (min(1.0, max(0.0, gx)), min(1.0, max(0.0, gy)))
 
 
 # =====================================================================
@@ -674,9 +692,9 @@ try:
         elif gp is not None:
             cv2.putText(vis, f"send x={gp[0]:.2f} y={gp[1]:.2f}",
                         (10, 82), FONT, 0.6, (0, 255, 0), 1)
-            if _H is None:
+            if _ranges is None:
                 cv2.putText(vis, "UNKALIBRIERT -> Taste C", (10, 104), FONT, 0.6, (0, 0, 255), 2)
-        elif _H is None:
+        elif _ranges is None:
             cv2.putText(vis, "UNKALIBRIERT -> Taste C (4 Extreme)",
                         (10, 82), FONT, 0.6, (0, 0, 255), 2)
 

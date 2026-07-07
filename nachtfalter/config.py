@@ -160,8 +160,8 @@ ARDUINO = dict(
 MOON = dict(
     enabled=True,
     url="ws://192.168.1.6:8765",
-    flipX=False,        # keine horizontale Spiegelung
-    flipY=False,        # obere Kalibrier-Ecke = obere Ecke im Spiel
+    flipX=True,         # fern (gx=1) -> links, nah (gx=0) -> rechts
+    flipY=False,        # max Hoehe -> oben
     smooth=0.5,         # Trägheit pro Frame (0=träge/sehr weich .. 1=hart/sofort)
     maxJump=0.5,         # Ausreißer-Schwelle (normalisiert 0..1): groesserer Sprung -> erst bestaetigen
     confirm=2,           # so viele Messages muss ein Sprung halten, sonst verworfen
