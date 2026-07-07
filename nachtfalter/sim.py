@@ -365,7 +365,7 @@ class Sim:
         # bg_frame 0..19: Lichter AN -> vorwärts (ON-Bild), sonst zurück (OFF-Bild)
         if not self.gameOver:
             self.survived += dts
-            anim_speed = 3.5 * dts
+            anim_speed = config.TRANSITION_SPEED * dts
             if rfid_light_on:
                 self.bg_frame = min(19.0, self.bg_frame + anim_speed)
             else:

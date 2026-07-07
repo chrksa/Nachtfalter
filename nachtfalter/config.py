@@ -62,7 +62,12 @@ PARAMS = dict(
 # Übergangs Dämmerung->Nacht: jedes Mal wenn der RFID-Tag ausgeht, bis das
 # Nachtbild voll da ist (bg_frame erreicht 19). 1.0 = aus, 2.0 = doppelt so
 # schnell/stark zum Mondkegel.
-TRANSITION_BOOST = 1.8
+TRANSITION_BOOST = 1.5
+
+# Tempo des Übergangs Nacht <-> Dämmerung (bg_frame 0..19 pro Sekunde).
+# Größer = schneller. 3.5 -> ~5,4 s für den vollen Übergang, 7.0 -> ~2,7 s,
+# 1.75 -> ~11 s.
+TRANSITION_SPEED = 5.0
 
 # Wenn True: Laternen ziehen Falter nur im (nach unten gerichteten) Licht-
 # kegel an statt im vollen Kreis. Wie weit der Kegel ist, ergibt sich aus
