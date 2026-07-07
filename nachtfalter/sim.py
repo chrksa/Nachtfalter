@@ -45,7 +45,7 @@ CAPTURE_ORBIT_FORCE = 0.55   # Tangentialkraft -> Kreisbewegung
 class Moth:
     __slots__ = ("x", "y", "vx", "vy", "maxSpeed", "wander", "spin", "flap",
                  "flapSpeed", "size", "col", "tone", "exposure", "dying",
-                 "rot", "spriteSrc", "captured", "orbitTimer")
+                 "rot", "spriteSrc", "captured", "orbitTimer", "entering")
 
 
 class Light:
@@ -118,12 +118,30 @@ class Sim:
         self.W, self.H = w, h
 
     # --- Schwarm / Reset ------------------------------------------
-    def make_moth(self):
-        cx = self.light.x if self.light.active else self.W / 2
-        cy = self.light.y if self.light.active else self.H / 2
+    def make_moth(self, offscreen=False):
         m = Moth()
-        m.x = cx + rand(-90, 90); m.y = cy + rand(-90, 90)
-        m.vx = rand(-1, 1); m.vy = rand(-1, 1)
+        if offscreen:
+            # Start knapp AUSSERHALB eines zufaelligen Rands, Flug nach innen.
+            margin = 80
+            edge = random.randint(0, 3)
+            if edge == 0:                       # oben
+                m.x, m.y = rand(0, self.W), -margin
+            elif edge == 1:                     # rechts
+                m.x, m.y = self.W + margin, rand(0, self.H)
+            elif edge == 2:                     # unten
+                m.x, m.y = rand(0, self.W), self.H + margin
+            else:                               # links
+                m.x, m.y = -margin, rand(0, self.H)
+            dx, dy = self.W / 2 - m.x, self.H / 2 - m.y
+            d = math.hypot(dx, dy) or 1
+            m.vx, m.vy = dx / d * rand(1.5, 2.5), dy / d * rand(1.5, 2.5)
+            m.entering = True
+        else:
+            cx = self.light.x if self.light.active else self.W / 2
+            cy = self.light.y if self.light.active else self.H / 2
+            m.x = cx + rand(-90, 90); m.y = cy + rand(-90, 90)
+            m.vx = rand(-1, 1); m.vy = rand(-1, 1)
+            m.entering = False
         m.maxSpeed = rand(2.0, 3.4); m.wander = rand(0, 6.28)
         m.spin = 1 if random.random() < .5 else -1
         m.flap = rand(0, 6.28); m.flapSpeed = rand(0.15, 0.3)
@@ -138,6 +156,12 @@ class Sim:
 
     def spawn_swarm(self):
         self.moths = [self.make_moth() for _ in range(int(self.P["count"]))]
+
+    def refill_from_outside(self):
+        """Schwarm wieder auf die Originalzahl (P['count']) bringen; alle Falter
+        starten ausserhalb des Bildschirms und fliegen herein (RFID-Tag aufgelegt)."""
+        self.moths = [self.make_moth(offscreen=True)
+                      for _ in range(int(self.P["count"]))]
 
     def reset(self):
         self.spawn_swarm()
@@ -324,10 +348,16 @@ class Sim:
         # GameOver Überprüfung am Anfang ---
         if self.gameOver:
             if self.rfid_tag_on and not self.last_rfid_tag_on:
-                self.reset()  # Mond wurde gerade aufgelegt -> Einmaliger Reset
+                self.reset()                 # Mond aufgelegt -> voller Reset
+                self.refill_from_outside()   # Schwarm von aussen einfliegen
+                self.last_rfid_tag_on = self.rfid_tag_on  # Flanke verbraucht
             else:
                 self.last_rfid_tag_on = self.rfid_tag_on
                 return  # Blockiert den Rest der Simulation im GameOver
+        # RFID-Tag gerade aufgelegt (steigende Flanke): Schwarm wieder auf die
+        # Originalzahl, Falter fliegen von ausserhalb des Bildschirms herein.
+        elif self.rfid_tag_on and not self.last_rfid_tag_on:
+            self.refill_from_outside()
 
         # Interaktion tracken (Mond angehoben <-> abgelegt)
         self._track_interaction(rfid_light_on, dts)
@@ -523,10 +553,15 @@ class Sim:
             if s < 0.5:
                 m.vx += hx * 0.3; m.vy += hy * 0.3
             m.x += m.vx * dt; m.y += m.vy * dt
-            if m.x < 2: m.x = 2; m.vx = abs(m.vx)
-            if m.x > W - 2: m.x = W - 2; m.vx = -abs(m.vx)
-            if m.y < 2: m.y = 2; m.vy = abs(m.vy)
-            if m.y > H - 2: m.y = H - 2; m.vy = -abs(m.vy)
+            if m.entering:
+                # Noch im Anflug von aussen -> nicht am Rand klemmen, bis drin.
+                if 0 <= m.x <= W and 0 <= m.y <= H:
+                    m.entering = False
+            else:
+                if m.x < 2: m.x = 2; m.vx = abs(m.vx)
+                if m.x > W - 2: m.x = W - 2; m.vx = -abs(m.vx)
+                if m.y < 2: m.y = 2; m.vy = abs(m.vy)
+                if m.y > H - 2: m.y = H - 2; m.vy = -abs(m.vy)
             m.flap += (m.flapSpeed + s * 0.06) * dt
 
         for i in range(len(self.embers) - 1, -1, -1):

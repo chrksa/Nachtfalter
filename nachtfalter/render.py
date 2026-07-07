@@ -549,7 +549,12 @@ class Renderer:
             self.moth(m, sim)
         self.embers(sim)
         self.hud(sim)
-        self.rfid_debug_button(sim)
+        # RFID-Debug-Button nur im Debug-Overlay (Taste D). Sonst ausblenden
+        # UND das Klick-Rechteck loeschen, damit er auch nicht klickbar bleibt.
+        if sim.P["showField"]:
+            self.rfid_debug_button(sim)
+        else:
+            self.rfid_btn = None
         if sim.gameOver:
             self.game_over(sim)
 
