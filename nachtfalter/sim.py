@@ -373,7 +373,10 @@ class Sim:
         if n > 0:
             cx /= n; cy /= n; avx /= n; avy /= n
 
-        follow = P["follow"]; cohesion = P["cohesion"]
+        # Übergang Dämmerung->Nacht (bg_frame läuft hoch auf 19): Falter
+        # kurzzeitig beschleunigen, damit sie schneller zum Mondkegel kommen.
+        boost = config.TRANSITION_BOOST if (rfid_light_on and self.bg_frame < 19.0) else 1.0
+        follow = P["follow"] * boost; cohesion = P["cohesion"]
         deathTime = P["deathTime"]
         light = self.light
         moths = self.moths
@@ -514,8 +517,9 @@ class Sim:
 
             m.vx += ax * dt; m.vy += ay * dt
             s = math.hypot(m.vx, m.vy)
-            if s > m.maxSpeed:
-                m.vx = m.vx / s * m.maxSpeed; m.vy = m.vy / s * m.maxSpeed; s = m.maxSpeed
+            mx = m.maxSpeed * boost
+            if s > mx:
+                m.vx = m.vx / s * mx; m.vy = m.vy / s * mx; s = mx
             if s < 0.5:
                 m.vx += hx * 0.3; m.vy += hy * 0.3
             m.x += m.vx * dt; m.y += m.vy * dt

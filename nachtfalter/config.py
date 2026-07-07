@@ -57,6 +57,12 @@ PARAMS = dict(
     showField=True,      # Gefahr-Info (Radius + Beschriftung) zeichnen
 )
 
+# Kurzzeitiger Geschwindigkeits-/Anziehungs-Boost der Falter WÄHREND des
+# Übergangs Dämmerung->Nacht: jedes Mal wenn der RFID-Tag ausgeht, bis das
+# Nachtbild voll da ist (bg_frame erreicht 19). 1.0 = aus, 2.0 = doppelt so
+# schnell/stark zum Mondkegel.
+TRANSITION_BOOST = 2.2
+
 # Wenn True: Laternen ziehen Falter nur im (nach unten gerichteten) Licht-
 # kegel an statt im vollen Kreis. Wie weit der Kegel ist, ergibt sich aus
 # dem Cutoff-Typ (up): up=0 (Full cut-off) = enger Kegel, up=1 (No cut-off)
