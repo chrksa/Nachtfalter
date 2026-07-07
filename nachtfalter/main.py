@@ -6,6 +6,7 @@ Hauptschleife. Steuerung:
   H   HUD ein/aus        R   Schwarm zurücksetzen
   F   Vollbild wechseln  D   Debug-Overlay (Lichtquellen)
   T   Tracking an/aus    E   Lichtquellen-Editor
+  M   Maus-Leitlicht an/aus (blendet den Cursor aus)
   Maus = Leitlicht (wenn kein Mond-Tracking aktiv ist)
 
 Start:  python main.py
@@ -72,6 +73,8 @@ def main():
     mouse_was_inside = False
     # -------------------------
     rfid_sim_on = False        # Fallback-Wert des Debug-Buttons
+    mouse_on = config.MOUSE_LEITLICHT   # Maus als Leitlicht (Taste M schaltet um)
+    pygame.mouse.set_visible(mouse_on and not fullscreen)
     # -------------------------
 
     clock = pygame.time.Clock()
@@ -81,7 +84,9 @@ def main():
         mx, my = pygame.mouse.get_pos()
         mouse_inside = pygame.mouse.get_focused() == 1
         # Im Editor ist die Maus zum Bearbeiten da, nicht als Leitlicht.
-        sim.update_pointer(mx * rw / win_w, my * rh / win_h, mouse_inside and not editor.active)
+        # mouse_on = False -> Maus steuert das Leitlicht nicht (nur der Mond).
+        sim.update_pointer(mx * rw / win_w, my * rh / win_h,
+                           mouse_inside and not editor.active and mouse_on)
 
         # --- SOUND STATUS-PRÜFUNG ---
         if mouse_inside != mouse_was_inside:
@@ -157,6 +162,10 @@ def main():
                     editor.delete_vertex_at(mx * rw / win_w, my * rh / win_h)
                 elif ev.key == pygame.K_h:
                     renderer.hud_visible = not renderer.hud_visible
+                elif ev.key == pygame.K_m and not editor.active:
+                    mouse_on = not mouse_on
+                    pygame.mouse.set_visible(mouse_on and not fullscreen)
+                    print(f"[Maus] Leitlicht {'AN' if mouse_on else 'AUS'}")
                 elif ev.key == pygame.K_d and not editor.active:
                     sim.P["showField"] = not sim.P["showField"]
                 elif ev.key == pygame.K_r:

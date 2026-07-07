@@ -157,6 +157,11 @@ WINDOW = dict(
     caption="Nachtfalter · Straßenlaternen",
 )
 
+# Maus als Fallback-Leitlicht. True = Maus steuert das Leitlicht, wenn kein
+# Mond trackt. False = Maus aus (nur der getrackte Mond steuert). Im Spiel mit
+# Taste M live umschaltbar; der Cursor wird beim Deaktivieren ausgeblendet.
+MOUSE_LEITLICHT = True
+
 ARDUINO = dict(
     enabled=True,
     port=None,           # None = automatisch suchen (Linux: /dev/ttyACM* oder /dev/ttyUSB*)
