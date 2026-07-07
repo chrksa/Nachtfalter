@@ -8,14 +8,14 @@ bestimmt und daraus:
   * Spiel-HOEHE   = reale Hoehe des Mondes (entfernungs-unabhaengig, aus 3D).
   * Spiel LINKS/RECHTS = Naehe zur Kamera (Tiefe): je naeher -> weiter RECHTS.
 
-Eine 4-Punkt-Kalibrierung der EXTREME legt die Spielkoordinaten fest:
-  fern/max-Hoehe, nah/max-Hoehe, nah/tiefste-Hoehe, fern/tiefste-Hoehe.
-Daraus wird JE ACHSE unabhaengig linear normiert (nah->0/fern->1 waagerecht,
-max-Hoehe->0/tiefste->1 senkrecht) -> erreicht garantiert 0 und 1 an den
-Extremen. Die Bildschirm-Seite (links/rechts) stellt flipX in config.py.
+Eine 6-Punkt-Kalibrierung (je 3 bei FERN und NAH: oben/mitte/unten) legt die
+Spielkoordinaten fest: gx aus der Distanz (nah->0/fern->1), gy aus einem
+DISTANZ-ABHAENGIGEN Hoehenband (Trapez) -> deckt die ganze Spielflaeche ab,
+auch wenn der erreichbare Hoehenbereich nah anders ist als fern.
+Die Bildschirm-Seite (links/rechts) stellt flipX in config.py.
 
 Tasten:
-  C          Kalibrierung starten (4 Extreme aufnehmen)
+  C          Kalibrierung starten (6 Punkte: 3 fern, 3 nah)
   Leertaste  aktuellen Kalibrier-Schritt aufnehmen
   M          Regler (Schwelle, IR-Belichtung, Tiefen-Fenster) ein/aus
   S          Settings speichern      R  ROI zuruecksetzen
@@ -393,38 +393,50 @@ def measure(u, v, Z, intrin):
 
 
 # =====================================================================
-# 4-Punkt-Kalibrierung im (Distanz, Hoehe)-Raum
+# 6-Punkt-Kalibrierung (3 fern, 3 nah) -> Trapez-Mapping (Distanz, Hoehe)
 # =====================================================================
+# 6-Punkt-Kalibrierung: je 3 Punkte bei FERN und NAH (oben/mitte/unten).
+# Damit deckt das Tracking die ganze Spielflaeche ab, auch wenn der erreichbare
+# Hoehenbereich nah anders ist als fern (Trapez statt Rechteck).
 CALIB_STEPS = [
-    "FERN, MAX. HOEHE",     # fern -> gx=1,  max Hoehe -> gy=0 (oben)
-    "NAH,  MAX. HOEHE",     # nah  -> gx=0,  max Hoehe -> gy=0
-    "NAH,  TIEFSTE HOEHE",  # nah  -> gx=0,  min Hoehe -> gy=1 (unten)
-    "FERN, TIEFSTE HOEHE",  # fern -> gx=1,  min Hoehe -> gy=1
+    "FERN OBEN",   # 0  fern, hoechste Position
+    "FERN MITTE",  # 1  fern, mittlere Hoehe
+    "FERN UNTEN",  # 2  fern, tiefste Position
+    "NAH OBEN",    # 3  nah,  hoechste Position
+    "NAH MITTE",   # 4  nah,  mittlere Hoehe
+    "NAH UNTEN",   # 5  nah,  tiefste Position
 ]
+N_CALIB = len(CALIB_STEPS)
 
-_src_pts = None          # 4 Messvektoren (distance, height) an den Extremen
-_ranges = None           # (d_near, d_far, h_hi, h_lo) fuer lineare Normierung
+_src_pts = None          # 6 Messvektoren (distance, height)
+_model = None            # (znear, zfar, near=(top,mid,bot), far=(top,mid,bot))
 _calib_active = False
 _calib_step = 0
 _calib_pts = []
 
 
-def _rebuild_ranges():
-    """Aus den 4 Extrem-Messungen je Achse Min/Max ableiten. Jede Achse wird
-    dann UNABHAENGIG linear normiert -> erreicht garantiert 0 und 1.
-
-    Schritte: 0 fern-maxH, 1 nah-maxH, 2 nah-minH, 3 fern-minH."""
-    global _ranges
-    if _src_pts is None or len(_src_pts) != 4:
-        _ranges = None
+def _rebuild_model():
+    """Aus den 6 Punkten das Mapping-Modell bauen: Distanz nah/fern (Mittel je 3)
+    und die Hoehen-Anker (oben/mitte/unten) bei nah und fern."""
+    global _model
+    if _src_pts is None or len(_src_pts) != N_CALIB:
+        _model = None
         return
     Z = [p[0] for p in _src_pts]
-    Hh = [p[1] for p in _src_pts]
-    d_far  = (Z[0] + Z[3]) / 2.0     # Mittel der beiden FERN-Punkte
-    d_near = (Z[1] + Z[2]) / 2.0     # Mittel der beiden NAH-Punkte
-    h_hi   = (Hh[0] + Hh[1]) / 2.0   # Mittel der beiden MAX-HOEHE-Punkte
-    h_lo   = (Hh[2] + Hh[3]) / 2.0   # Mittel der beiden MIN-HOEHE-Punkte
-    _ranges = (d_near, d_far, h_hi, h_lo)
+    H = [p[1] for p in _src_pts]
+    z_far  = (Z[0] + Z[1] + Z[2]) / 3.0
+    z_near = (Z[3] + Z[4] + Z[5]) / 3.0
+    near = (H[3], H[4], H[5])                 # oben, mitte, unten (nah)
+    far  = (H[0], H[1], H[2])                 # oben, mitte, unten (fern)
+    _model = (z_near, z_far, near, far)
+
+
+def _piecewise(v, a, b, c):
+    """Stueckweise linear: a->0.0, b->0.5, c->1.0 (a,b,c monoton oben->unten,
+    Richtung egal). Ausserhalb wird geklemmt."""
+    if (v - b) * (a - b) >= 0:                # v auf der a-Seite von b
+        return 0.5 * (v - a) / (b - a) if abs(b - a) > 1e-9 else 0.0
+    return 0.5 + 0.5 * (v - b) / (c - b) if abs(c - b) > 1e-9 else 1.0
 
 
 def load_calib():
@@ -432,14 +444,14 @@ def load_calib():
     try:
         d = json.load(open(CALIB_FILE, encoding="utf-8"))
         pts = d.get("points")
-        if isinstance(pts, list) and len(pts) == 4:
+        if isinstance(pts, list) and len(pts) == N_CALIB:
             _src_pts = [[float(p[0]), float(p[1])] for p in pts]
-            _rebuild_ranges()
-            print(f"[tracking] Kalibrierung geladen: {_src_pts}")
+            _rebuild_model()
+            print(f"[tracking] Kalibrierung geladen ({N_CALIB} Punkte)")
         else:
-            print("[tracking] Kalibrier-Datei unvollstaendig -> Taste C")
+            print(f"[tracking] Kalibrierung passt nicht ({N_CALIB} Punkte noetig) -> Taste C")
     except Exception:
-        print("[tracking] keine Kalibrierung -> Taste C (4 Extreme aufnehmen)")
+        print(f"[tracking] keine Kalibrierung -> Taste C ({N_CALIB} Punkte aufnehmen)")
 
 
 def save_calib():
@@ -447,7 +459,7 @@ def save_calib():
         return
     try:
         json.dump({"points": _src_pts}, open(CALIB_FILE, "w", encoding="utf-8"))
-        print(f"[tracking] Kalibrierung gespeichert: {_src_pts}")
+        print(f"[tracking] Kalibrierung gespeichert ({len(_src_pts)} Punkte)")
     except OSError as e:
         print(f"[tracking] Speichern fehlgeschlagen: {e}")
 
@@ -468,11 +480,11 @@ def calib_capture(m):
         return
     _calib_pts.append([float(m[0]), float(m[1])])
     _calib_step += 1
-    if _calib_step < 4:
+    if _calib_step < N_CALIB:
         print(f"[tracking] ok. Jetzt {CALIB_STEPS[_calib_step]}, dann Leertaste")
         return
     _src_pts = list(_calib_pts)
-    _rebuild_ranges()
+    _rebuild_model()
     _calib_active = False
     save_calib()
     tracker.reset()
@@ -482,17 +494,24 @@ def calib_capture(m):
 def to_game(m):
     """Messvektor (distance, height) -> Spielkoordinaten (gx, gy) oder None.
 
-    Jede Achse UNABHAENGIG linear zwischen den kalibrierten Extremen:
-      waagerecht: nah -> gx=0, fern -> gx=1
-      senkrecht:  max Hoehe -> gy=0, tiefste Hoehe -> gy=1"""
-    if _ranges is None or m is None:
+    gx aus der Distanz (nah->0, fern->1). gy aus einem DISTANZ-ABHAENGIGEN
+    Hoehenband: oben/mitte/unten werden zwischen nah und fern interpoliert und
+    stueckweise auf 0/0.5/1 abgebildet -> volle Spielhoehe bei jeder Distanz."""
+    if _model is None or m is None:
         return None
-    d_near, d_far, h_hi, h_lo = _ranges
-    dd = d_far - d_near
-    dh = h_lo - h_hi
-    gx = (m[0] - d_near) / dd if abs(dd) > 1e-9 else 0.5
-    gy = (m[1] - h_hi) / dh if abs(dh) > 1e-9 else 0.5
-    return (min(1.0, max(0.0, gx)), min(1.0, max(0.0, gy)))
+    Z, h = m
+    zn, zf, near, far = _model
+    nt, nm, nb = near
+    ft, fm, fb = far
+    dz = zf - zn
+    t = (Z - zn) / dz if abs(dz) > 1e-9 else 0.5
+    gx = min(1.0, max(0.0, t))
+    tc = min(1.0, max(0.0, t))                       # fuer die Hoehen-Anker
+    top = nt + (ft - nt) * tc
+    mid = nm + (fm - nm) * tc
+    bot = nb + (fb - nb) * tc
+    gy = _piecewise(h, top, mid, bot)
+    return (gx, min(1.0, max(0.0, gy)))
 
 
 # =====================================================================
@@ -686,16 +705,17 @@ try:
                         (10, 52), FONT, 0.55, (0, 0, 255), 1)
 
         if _calib_active:
-            cv2.putText(vis, f"KALIBRIERUNG {_calib_step + 1}/4: {CALIB_STEPS[_calib_step]}"
-                             f" -> LEER", (10, 82), FONT, 0.6, (0, 255, 0), 2)
+            cv2.putText(vis, f"KALIBRIERUNG {_calib_step + 1}/{N_CALIB}: "
+                             f"{CALIB_STEPS[_calib_step]} -> LEER",
+                        (10, 82), FONT, 0.6, (0, 255, 0), 2)
             cv2.putText(vis, "ESC = abbrechen", (10, 104), FONT, 0.5, (0, 255, 0), 1)
         elif gp is not None:
             cv2.putText(vis, f"send x={gp[0]:.2f} y={gp[1]:.2f}",
                         (10, 82), FONT, 0.6, (0, 255, 0), 1)
-            if _ranges is None:
+            if _model is None:
                 cv2.putText(vis, "UNKALIBRIERT -> Taste C", (10, 104), FONT, 0.6, (0, 0, 255), 2)
-        elif _ranges is None:
-            cv2.putText(vis, "UNKALIBRIERT -> Taste C (4 Extreme)",
+        elif _model is None:
+            cv2.putText(vis, f"UNKALIBRIERT -> Taste C ({N_CALIB} Punkte)",
                         (10, 82), FONT, 0.6, (0, 0, 255), 2)
 
         hint = ("C=Kalibrieren  M=Regler  S=Speichern  R=ROI  X=Ausschl.  "
