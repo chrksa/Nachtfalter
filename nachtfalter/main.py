@@ -1,7 +1,7 @@
 """
 NACHTFALTER · main   (entspricht Abschnitt G der HTML — Boot/Loop)
 ====================================================================
-Startet alles. Verdrahtet esp32, moon, sim, renderer und fährt die
+Startet alles. Verdrahtet moon, sim, renderer und fährt die
 Hauptschleife. Steuerung:
   H   HUD ein/aus        R   Schwarm zurücksetzen
   F   Vollbild wechseln  D   Debug-Overlay (Lichtquellen)
@@ -15,7 +15,6 @@ import pygame
 
 import config
 import assets
-from esp32 import ESP32
 from moon import Moon
 from sim import Sim
 from render import Renderer
@@ -48,10 +47,9 @@ def main():
     rw, rh = max(1, int(win_w * scale)), max(1, int(win_h * scale))
     render_surf = pygame.Surface((rw, rh)) if scale != 1.0 else screen
 
-    esp32 = ESP32(**config.ESP32)
     arduino_rfid = ArduinoRFID(**config.ARDUINO)
     moon = Moon(**config.MOON)
-    sim = Sim(rw, rh, esp32=esp32, moon=moon)
+    sim = Sim(rw, rh, moon=moon)
     renderer = Renderer(render_surf, fonts, config.ASSET_DIR)
     editor = Editor(sim)
 
@@ -207,7 +205,7 @@ def main():
             pygame.transform.smoothscale(render_surf, (win_w, win_h), screen)
         pygame.display.flip()
 
-    esp32.close(); arduino_rfid.close(); moon.close(); pygame.quit(); sys.exit(0)
+    arduino_rfid.close(); moon.close(); pygame.quit(); sys.exit(0)
 
 
 if __name__ == "__main__":

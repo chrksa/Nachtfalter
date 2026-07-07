@@ -38,9 +38,11 @@ class ArduinoRFID:
             print(f"[arduino] Fehler beim Verbinden auf {port}: {e}")
 
     def _autodetect(self):
-        cands = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*") + glob.glob("COM*"))
-        # Wenn der ESP32 bereits den ersten belegt, nehmen wir hier den zweiten verfügbaren
-        return cands[-1] if cands else None
+        # macOS: /dev/cu.usbmodem* /dev/cu.usbserial*  |  Linux: /dev/ttyACM* /dev/ttyUSB*  |  Windows: COM*
+        cands = sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/cu.usbserial*")
+                       + glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*")
+                       + glob.glob("COM*"))
+        return cands[0] if cands else None
 
     def _read_loop(self):
         buffer = ""

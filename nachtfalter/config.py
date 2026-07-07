@@ -145,12 +145,6 @@ WINDOW = dict(
     caption="Nachtfalter · Straßenlaternen",
 )
 
-ESP32 = dict(
-    enabled=False,       # Haptik wird nicht mehr verwendet
-    port=None,           # z.B. "/dev/ttyUSB0", None = automatisch suchen
-    baud=115200,
-)
-
 ARDUINO = dict(
     enabled=True,
     port=None,           # None = automatisch suchen (Linux: /dev/ttyACM* oder /dev/ttyUSB*)

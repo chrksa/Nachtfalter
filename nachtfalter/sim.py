@@ -2,7 +2,7 @@
 NACHTFALTER · sim   (entspricht Abschnitt C der HTML — das "Gehirn")
 ====================================================================
 Wortgetreuer Port der Boids-/Laternen-/Kollisions-/Scroll-Logik.
-Reine Mathe, keine Grafik. esp32 und moon werden injiziert (siehe
+Reine Mathe, keine Grafik. moon wird injiziert (siehe
 main.py), damit es keine zirkulären Importe gibt.
 """
 import csv
@@ -55,9 +55,8 @@ class Light:
 
 
 class Sim:
-    def __init__(self, w, h, esp32=None, moon=None):
+    def __init__(self, w, h, moon=None):
         self.W, self.H = w, h
-        self.esp32 = esp32
         self.moon = moon
         self.P = dict(config.PARAMS)
         self.bg_frame = 0.0
@@ -243,8 +242,6 @@ class Sim:
             self.embers.append(SimpleNamespace(
                 x=m.x, y=m.y, vx=rand(-0.8, 0.8), vy=rand(-1.2, -0.2),
                 life=rand(0.5, 1.1), maxLife=1.1))
-        if self.esp32:
-            self.esp32.send_death()
 
     # --- CSV-Log --------------------------------------------------
     def _ensure_log_file(self):
