@@ -53,6 +53,7 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 BASE = os.path.dirname(__file__)
 
 ENABLE_IR = True        # IR-Stream mitlaufen lassen (kostet USB-Bandbreite)
+USE_DEPTH = True        # Tiefe (IR-Emitter) nutzen -> voller 3D-Punkt je Kamera
 MAX_CAMS = 2
 
 MASK_WIN = "Maske"
@@ -253,25 +254,31 @@ CALIB_FILE = os.path.join(BASE, "homography_calib_v3.json")
 CALIB_STEPS = ["OBEN LINKS", "OBEN RECHTS", "UNTEN RECHTS", "UNTEN LINKS"]
 DST_PTS = np.float32([[0, 0], [1, 0], [1, 1], [0, 1]])
 
-# --- 3D-Triangulation ------------------------------------------------
-# Physisches Seitenverhaeltnis (Breite/Hoehe) des Spielfeld-Rechtecks, das
-# du in die 4 Ecken kalibrierst. Nur das VERHAELTNIS zaehlt, nicht die Groesse.
-# Fuer die Triangulation moeglichst genau messen (Standard 16:9).
+# --- 3D-Geometrie (Triangulation + Tiefe) ----------------------------
+# Physisches Seitenverhaeltnis (Breite/Hoehe) des Leinwand-Rechtecks, das du
+# in die 4 Ecken kalibrierst.
 FIELD_ASPECT = 16.0 / 9.0
 
-# Die 4 Ecken als 3D-Weltpunkte auf der Ebene Z=0 (Reihenfolge = CALIB_STEPS).
-# Breite = 1, Hoehe = 1/AR -> Weltframe teilt sich beide Kameras.
-_FH = 1.0 / FIELD_ASPECT
-OBJ_PTS = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
-                    [1.0, _FH, 0.0], [0.0, _FH, 0.0]], np.float64).reshape(-1, 1, 3)
+# GEMESSENE Breite der Leinwand in METERN. WICHTIG fuer den Tiefen-Modus:
+# die Tiefe liefert Meter, also muss der Weltframe metrisch sein. Fuer reine
+# Triangulation zaehlt nur das Verhaeltnis, nicht dieser Absolutwert.
+FIELD_WIDTH_M = 2.66
+FIELD_W = FIELD_WIDTH_M                     # Weltbreite (m)
+FIELD_H = FIELD_WIDTH_M / FIELD_ASPECT      # Welthoehe  (m)
 
-# Wenn die zwei Sichtstrahlen weiter als das voneinander entfernt sind (in
-# Weltbreiten), gilt die Triangulation als unsicher (Fehlpaarung/Rauschen).
-TRI_MAX_RESIDUAL = 0.15
+# Die 4 Ecken als 3D-Weltpunkte auf der Leinwand-Ebene Z=0 (Reihenfolge =
+# CALIB_STEPS). Metrisch -> teilt sich beide Kameras UND passt zur Tiefe.
+OBJ_PTS = np.array([[0.0, 0.0, 0.0], [FIELD_W, 0.0, 0.0],
+                    [FIELD_W, FIELD_H, 0.0], [0.0, FIELD_H, 0.0]],
+                   np.float64).reshape(-1, 1, 3)
+
+# Max. Abstand der zwei Sichtstrahlen (in Metern), ab dem die Triangulation
+# als unsicher gilt (Fehlpaarung/Rauschen) -> Rueckfall.
+TRI_MAX_RESIDUAL = 0.15 * FIELD_W
 
 
 def triangulate(rayA, rayB):
-    """Zwei Weltstrahlen (C, d) -> (nx, ny, residual) in Spielkoordinaten.
+    """Zwei Weltstrahlen (C, d) -> (nx, ny, residual_m) in Spielkoordinaten.
 
     Schneidet die Strahlen (kuerzeste Verbindung), projiziert den Mittelpunkt
     senkrecht auf die Ebene Z=0 und normiert auf 0..1. Z faellt dabei raus."""
@@ -290,8 +297,8 @@ def triangulate(rayA, rayB):
     p2 = C2 + t * d2
     P = 0.5 * (p1 + p2)
     resid = float(np.linalg.norm(p1 - p2))
-    nx = min(1.0, max(0.0, float(P[0])))
-    ny = min(1.0, max(0.0, float(P[1]) * FIELD_ASPECT))
+    nx = min(1.0, max(0.0, float(P[0]) / FIELD_W))
+    ny = min(1.0, max(0.0, float(P[1]) / FIELD_H))
     return nx, ny, resid
 
 
@@ -334,27 +341,44 @@ class RealSenseCamera:
         if ENABLE_IR:
             cfg.enable_stream(rs.stream.infrared, 1, W_IMG, H_IMG, rs.format.y8, 30)
         cfg.enable_stream(rs.stream.color, W_IMG, H_IMG, rs.format.bgr8, 30)
+        if USE_DEPTH:
+            cfg.enable_stream(rs.stream.depth, W_IMG, H_IMG, rs.format.z16, 30)
         self.profile = self.pipe.start(cfg)
         self._rgb_sensor = None
         self._setup_sensors()
         self._read_intrinsics()
 
+        # Tiefe auf das Farbbild ausrichten (Blob wird in Farbe erkannt).
+        self._align = rs.align(rs.stream.color) if USE_DEPTH else None
+        self._depth_scale = 1.0
+        self._depth_m = None               # aktuelle Tiefe (Meter) je Pixel
+        if USE_DEPTH:
+            try:
+                self._depth_scale = self.profile.get_device() \
+                    .first_depth_sensor().get_depth_scale()
+            except Exception as e:
+                print(f"[{self.label}] Tiefen-Skala nicht lesbar: {e}")
+
         # --- Aufnahme-Thread: haelt immer den neuesten Frame bereit ---
-        self._latest = None                # (color_bgr, ir_gray_or_None)
+        self._latest = None                # (color_bgr, ir_gray, depth_m)
         self._lock = threading.Lock()
         self._run = True
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
 
-    # -- Sensor-Setup: Emitter aus, Farbkamera fest belichtet --
+    # -- Sensor-Setup: Emitter je nach Tiefen-Modus, Farbkamera fest belichtet --
     def _setup_sensors(self):
         dev = self.profile.get_device()
         try:
             stereo = dev.first_depth_sensor()
-            stereo.set_option(rs.option.emitter_enabled, 0)   # keine Laser-Dots
-            stereo.set_option(rs.option.enable_auto_exposure, 0)
-            stereo.set_option(rs.option.exposure, 800)        # IR-Fallback
-            stereo.set_option(rs.option.gain, 16)
+            if USE_DEPTH:
+                stereo.set_option(rs.option.emitter_enabled, 1)   # Dots -> gute Tiefe
+                stereo.set_option(rs.option.enable_auto_exposure, 1)
+            else:
+                stereo.set_option(rs.option.emitter_enabled, 0)   # keine Laser-Dots
+                stereo.set_option(rs.option.enable_auto_exposure, 0)
+                stereo.set_option(rs.option.exposure, 800)        # IR-Fallback
+                stereo.set_option(rs.option.gain, 16)
         except Exception as e:
             print(f"[{self.label}] Stereo-Sensor-Setup fehlgeschlagen: {e}")
         for s in dev.query_sensors():
@@ -391,17 +415,26 @@ class RealSenseCamera:
                 frames = self.pipe.wait_for_frames()
             except Exception:
                 break
-            color = frames.get_color_frame()
-            if not color:
-                continue
-            color_img = np.asanyarray(color.get_data()).copy()
             ir_img = None
             if ENABLE_IR:
                 ir = frames.get_infrared_frame(1)
                 if ir:
                     ir_img = np.asanyarray(ir.get_data()).copy()
+            depth_m = None
+            if USE_DEPTH and self._align is not None:
+                aligned = self._align.process(frames)   # Tiefe auf Farbe ausrichten
+                color = aligned.get_color_frame()
+                dframe = aligned.get_depth_frame()
+                if dframe:
+                    depth_m = (np.asanyarray(dframe.get_data()).astype(np.float32)
+                               * self._depth_scale)      # Rohwerte -> Meter
+            else:
+                color = frames.get_color_frame()
+            if not color:
+                continue
+            color_img = np.asanyarray(color.get_data()).copy()
             with self._lock:
-                self._latest = (color_img, ir_img)
+                self._latest = (color_img, ir_img, depth_m)
 
     def read(self):
         with self._lock:
@@ -502,6 +535,47 @@ class RealSenseCamera:
         if n < 1e-9:
             return None
         return pose["C"], d / n
+
+    def set_depth(self, depth_m):
+        self._depth_m = depth_m
+
+    def _sample_depth(self, u, v, win=7, min_valid=0.3):
+        """Median-Entfernung (Meter) in einem Fenster um (u, v), oder None."""
+        dm = self._depth_m
+        if dm is None:
+            return None
+        r = win // 2
+        y0, y1 = max(0, int(v) - r), min(dm.shape[0], int(v) + r + 1)
+        x0, x1 = max(0, int(u) - r), min(dm.shape[1], int(u) + r + 1)
+        patch = dm[y0:y1, x0:x1]
+        valid = patch[patch > 0]
+        if patch.size == 0 or valid.size < min_valid * patch.size:
+            return None
+        return float(np.median(valid))
+
+    def depth_point(self, u, v, m):
+        """Pixel + Tiefe -> Spielkoordinaten (nx, ny, abstand_m) oder None.
+
+        Deprojiziert den Blob mit der gemessenen Tiefe zu einem metrischen
+        3D-Punkt in Kamerakoordinaten, dreht ihn ueber die PnP-Pose ins
+        Leinwand-System und wirft die Normale (vor/zurueck) weg."""
+        if not USE_DEPTH or m != "BLOB":
+            return None
+        pose = self._pose.get(m)
+        K = self.K.get(m)
+        if pose is None or K is None:
+            return None
+        Z = self._sample_depth(u, v)
+        if Z is None or Z <= 0:
+            return None
+        dist = self.dist.get(m, np.zeros(5))
+        und = cv2.undistortPoints(np.array([[[u, v]]], np.float64), K, dist)
+        xn, yn = und[0, 0]
+        Xc = np.array([xn * Z, yn * Z, Z])          # 3D in Kamerakoordinaten (m)
+        Xw = pose["Rt"] @ Xc + pose["C"]            # -> Leinwand-Weltframe (m)
+        nx = min(1.0, max(0.0, float(Xw[0]) / FIELD_W))
+        ny = min(1.0, max(0.0, float(Xw[1]) / FIELD_H))
+        return nx, ny, float(Xw[2])                 # Xw[2] = Abstand vor Leinwand
 
     def set_calib(self, m, pts):
         self._src_pts[m] = list(pts)
@@ -927,7 +1001,8 @@ try:
             latest = cam.read()
             if latest is None:
                 continue
-            color_img, ir_img = latest
+            color_img, ir_img, depth_m = latest
+            cam.set_depth(depth_m)
             if mode == "IR" and ir_img is not None:
                 vis = cv2.cvtColor(ir_img, cv2.COLOR_GRAY2BGR)
                 cands = detect_ir(ir_img, vis, cam)
@@ -943,25 +1018,40 @@ try:
         raw_by_cam = {cam: (max(cands, key=lambda c: c[2]) if cands else None)
                       for cam, _, cands in per_cam}
 
-        # --- Position bestimmen ---
-        # Bevorzugt 3D-TRIANGULATION: sehen >=2 kalibrierte Kameras den Mond,
-        # schneiden sich ihre Sichtstrahlen im echten 3D-Punkt -> Hoehe (Z)
-        # faellt raus. Sonst Rueckfall auf die (ebene) Homographie-Fusion.
+        # --- Position bestimmen (gestaffelt nach Genauigkeit) ---
+        # 1) TIEFE: jede Kamera mit Pose + gueltiger Tiefe liefert einen vollen
+        #    3D-Punkt -> vor/zurueck faellt sauber raus. Eine Kamera reicht;
+        #    sehen beide den Mond, mittelt der Tracker beide Punkte (Redundanz).
+        # 2) TRIANGULATION: keine Tiefe, aber >=2 Kameras sehen den Mond.
+        # 3) HOMOGRAPHIE: nur eine ebene Naeherung (mit Z-Fehler) als Notnagel.
         fused = []
-        tri = None                         # (nx, ny, residual) wenn trianguliert
-        posed = [(cam, raw_by_cam[cam]) for cam in CAMS
-                 if cam.has_pose(mode) and raw_by_cam.get(cam) is not None]
-        if len(posed) >= 2:
-            (camA, bA), (camB, bB) = posed[0], posed[1]
-            rA = camA.ray(bA[0], bA[1], mode)
-            rB = camB.ray(bB[0], bB[1], mode)
-            if rA is not None and rB is not None:
-                res = triangulate(rA, rB)
-                if res is not None and res[2] <= TRI_MAX_RESIDUAL:
-                    tri = res
-                    fused.append((res[0], res[1], bA[2] + bB[2]))
+        method = None
+        depth_off = None                   # Abstand vor Leinwand (Info)
+        for cam, _, cands in per_cam:
+            if not cands:
+                continue
+            b = max(cands, key=lambda c: c[2])
+            dp = cam.depth_point(b[0], b[1], mode)
+            if dp is not None:
+                fused.append((dp[0], dp[1], b[2]))
+                depth_off = dp[2]
+        if fused:
+            method = "Tiefe"
 
-        if not fused:                      # Rueckfall: ebene Homographie
+        if not fused:                      # 2) Triangulation
+            posed = [(cam, raw_by_cam[cam]) for cam in CAMS
+                     if cam.has_pose(mode) and raw_by_cam.get(cam) is not None]
+            if len(posed) >= 2:
+                (camA, bA), (camB, bB) = posed[0], posed[1]
+                rA = camA.ray(bA[0], bA[1], mode)
+                rB = camB.ray(bB[0], bB[1], mode)
+                if rA is not None and rB is not None:
+                    res = triangulate(rA, rB)
+                    if res is not None and res[2] <= TRI_MAX_RESIDUAL:
+                        fused.append((res[0], res[1], bA[2] + bB[2]))
+                        method = f"3D-Tri (res {res[2]*100:.0f}cm)"
+
+        if not fused:                      # 3) ebene Homographie
             calibrated = [cam for cam in CAMS if cam.H(mode) is not None]
             sources = calibrated if calibrated else CAMS[:1]
             for cam, _, cands in per_cam:
@@ -970,6 +1060,8 @@ try:
                 for (u, v, score) in cands:
                     gx, gy = cam.to_game(u, v, mode)
                     fused.append((gx, gy, score))
+            if fused:
+                method = "2D-Homogr."
 
         # --- gemeinsamer Tracker im Spielkoordinaten-Raum ---
         tp = tracker.update(fused, dt)     # (x, y) in 0..1 oder None
@@ -985,8 +1077,9 @@ try:
                 px, py = cam.from_game(tp[0], tp[1], mode)
                 if -50 <= px <= W_IMG + 50 and -50 <= py <= H_IMG + 50:
                     cv2.circle(vis, (int(px), int(py)), 8, (0, 255, 0), 2)
-                src_tag = f"3D-Tri (res {tri[2]:.2f})" if tri is not None else "2D-Homogr."
-                cv2.putText(vis, f"send x={tp[0]:.2f} y={tp[1]:.2f}  [{src_tag}]",
+                off_tag = f"  {depth_off:.2f}m vor LW" if depth_off is not None else ""
+                cv2.putText(vis, f"send x={tp[0]:.2f} y={tp[1]:.2f}  "
+                                 f"[{method or '-'}]{off_tag}",
                             (10, 55), FONT, 0.6, (0, 255, 0), 1)
             else:
                 cv2.putText(vis, "kein Mond", (10, 55), FONT, 0.6, (0, 0, 255), 1)
