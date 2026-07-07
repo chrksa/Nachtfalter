@@ -37,6 +37,22 @@ class Renderer:
         self.fonts = fonts
         self.asset_dir = asset_dir
         self.W, self.H = surface.get_size()
+
+        # --- Bildsequenz für den Endscreen laden ---
+        import os
+        self.end_frames = []
+        self.current_frame_time = 0.0  # Interner Timer für die Abspielgeschwindigkeit
+        for i in range(60):
+            filename = f"background/endscreen/Komp 1_{i:05d}.png"  # Erzeugt z.B. Komp 1_00015.png
+            img_path = os.path.join(asset_dir, filename)
+            try:
+                raw_img = pygame.image.load(img_path).convert_alpha()
+                scaled_img = pygame.transform.smoothscale(raw_img, (self.W, self.H))
+                self.end_frames.append(scaled_img)
+            except Exception as e:
+                # Falls ein Frame fehlt, geben wir eine Warnung aus, brechen aber nicht ab
+                print(f"Warnung: Konnte {filename} nicht laden: {e}")
+
         self.hud_visible = True
         self.rfid_btn = None        # Klick-Rechteck des Debug-Buttons (Render-Koordinaten)
         self.stars = [dict(x=random.random(), y=random.random() * 0.6,
@@ -483,18 +499,28 @@ class Renderer:
         pygame.draw.rect(self.s, (15, 15, 18), rect, width=2, border_radius=6)
         self.s.blit(txt, (rect.x + pad, rect.y + pad // 2))
         self.rfid_btn = rect
+    
+    # --- Zurücksetzen der end game Animation ---
+    def reset_animation(self):
+        self.current_frame_time = 0.0
 
     def game_over(self, sim):
         W, H = self.W, self.H
-        veil = pygame.Surface((W, H), pygame.SRCALPHA); veil.fill((5, 6, 10, 150))
+        
+        # 1. Hintergrund abdunkeln
+        veil = pygame.Surface((W, H), pygame.SRCALPHA)
+        veil.fill((5, 6, 10, 220)) 
         self.s.blit(veil, (0, 0))
-        big = self.fonts["big"]; f = self.fonts["small"]
-        t1 = big.render("SCHWARM AUSGELÖSCHT", True, (159, 212, 255))
-        t2 = f.render(f"überlebt: {sim.survived:.1f} s", True, (125, 119, 108))
-        t3 = f.render("Neustart: R", True, (255, 202, 122))
-        self.s.blit(t1, (W / 2 - t1.get_width() / 2, H / 2 - 40))
-        self.s.blit(t2, (W / 2 - t2.get_width() / 2, H / 2))
-        self.s.blit(t3, (W / 2 - t3.get_width() / 2, H / 2 + 28))
+        frame_fps = 30.0 
+        self.current_frame_time += sim.dts  # Nutzt das dts (Delta-Time) aus der Simulation
+        frame_idx = int(self.current_frame_time * frame_fps)
+        # Wenn wir das Ende der Liste (Frame 59) erreicht haben, frieren wir den letzten Frame ein
+        if self.end_frames:
+            if frame_idx >= len(self.end_frames):
+                frame_idx = len(self.end_frames) - 1
+            
+            # Aktuellen Frame auf den Bildschirm blitten
+            self.s.blit(self.end_frames[frame_idx], (0, 0))
 
     # === Frame =====================================================
     def frame(self, sim):
