@@ -51,6 +51,13 @@ MASK_WIN = "Regler"
 
 USE_EMITTER = False      # IR-Emitter aus -> sauberes LED-Bild (E schaltet live um)
 
+# Welche Kamera-Achse ist die REALE HOEHE?
+#   "x" = Kamera um 90 Grad gedreht -> Hoehe = Bild-Horizontale, Bild-Vertikale
+#         (Kamera-Y) wird ignoriert (hoch/runter im Bild ohne Wirkung).
+#   "y" = Kamera aufrecht montiert.
+# Distanz (links/rechts im Spiel) ist immer die Tiefe Z, von der Drehung unberuehrt.
+HEIGHT_AXIS = "x"
+
 
 # =====================================================================
 # One-Euro-Filter + MoonTracker (Glaettung/Gating im Spielkoordinaten-Raum)
@@ -364,9 +371,14 @@ def measure(u, v, Z, intrin):
     """(u, v, Z) -> Messvektor (distance, height) in Metern.
 
     distance = Z (Tiefe entlang Achse = Naehe zur Kamera),
-    height   = Y (deprojizierte, entfernungs-unabhaengige Hoehe)."""
+    height   = deprojizierte, entfernungs-unabhaengige reale Hoehe.
+
+    Bei GEDREHTER Kamera (HEIGHT_AXIS='x') ist die reale Hoehe die Kamera-X-
+    Achse (Bild-Horizontale); die Kamera-Y-Achse (Bild-Vertikale) wird komplett
+    IGNORIERT -> hoch/runter im Kamerabild hat keine Wirkung."""
     x, y, z = rs.rs2_deproject_pixel_to_point(intrin, [float(u), float(v)], float(Z))
-    return z, y            # (distance, height)
+    height = x if HEIGHT_AXIS == "x" else y
+    return z, height        # (distance, height)
 
 
 # =====================================================================
