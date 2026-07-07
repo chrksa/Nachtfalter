@@ -208,7 +208,7 @@ class Sim:
         """Erzeugt die Polygon-Hazards aus config.BG_LIGHTS an den aktuellen
         Bildschirm-Positionen des scrollenden Panoramas. Nur wenn Lichter AN."""
         self.hazards = []
-        if not rfid_light_on:
+        if not rfid_light_on or self.bg_frame < 19.0:
             return
         W, H = self.W, self.H
         dw = int(H * config.BG_ASPECT)          # identisch zur Kachelbreite im Renderer
@@ -338,7 +338,7 @@ class Sim:
         # bg_frame 0..19: Lichter AN -> vorwärts (ON-Bild), sonst zurück (OFF-Bild)
         if not self.gameOver:
             self.survived += dts
-            anim_speed = 12.0 * dts
+            anim_speed = 3.5 * dts
             if rfid_light_on:
                 self.bg_frame = min(19.0, self.bg_frame + anim_speed)
             else:
@@ -392,7 +392,7 @@ class Sim:
 
             # --- Gefangen im Lichtkegel: zur Quelle fliegen, 5 s kreisen, dann sterben ---
             if m.captured is not None:
-                if not rfid_light_on or self.editing:
+                if not rfid_light_on or self.editing or self.bg_frame < 19.0:
                     # Laternen AUS / Editor -> freilassen, normaler Flug geht weiter
                     m.captured = None
                     m.orbitTimer = 0.0
