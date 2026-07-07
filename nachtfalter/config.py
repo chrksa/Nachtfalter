@@ -121,7 +121,7 @@ ASSETS = dict(
         # Durchlaufendes Panorama: [0] = unbeleuchtet, [1] = beleuchtet (Lichtkegel).
         # Wird seitlich gescrollt und nahtlos geloopt. Leere Liste -> wieder die
         # 20-Frame-Animation (animation) als Fallback.
-        panorama=["background/07_Lightmockup_noBG_OFF.png", "background/07_Lightmockup_noBG_ON.png"],
+        panorama=["background/Final_v1_OFF.png", "background/Final_v1_ON.png"],
         animation=[f"background/dawn/{i:04d}.png" for i in range(1, 21)],
         sky="",   # Vollbild-Himmel ohne Parallax
         show_moon=False,                  # False = gar kein Mond (auch kein Default-Mond)

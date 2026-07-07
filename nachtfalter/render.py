@@ -511,13 +511,21 @@ class Renderer:
         veil = pygame.Surface((W, H), pygame.SRCALPHA)
         veil.fill((5, 6, 10, 220)) 
         self.s.blit(veil, (0, 0))
-        frame_fps = 30.0 
-        self.current_frame_time += sim.dts  # Nutzt das dts (Delta-Time) aus der Simulation
-        frame_idx = int(self.current_frame_time * frame_fps)
-        # Wenn wir das Ende der Liste (Frame 59) erreicht haben, frieren wir den letzten Frame ein
+        
         if self.end_frames:
-            if frame_idx >= len(self.end_frames):
-                frame_idx = len(self.end_frames) - 1
+            frame_fps = 15.0 
+            self.current_frame_time += sim.dts
+            total_frames = len(self.end_frames)
+            
+            # Ein kompletter Hin- und Rückweg hat (total_frames * 2 - 2) Schritte
+            loop_length = (total_frames * 2) - 2
+            raw_idx = int(self.current_frame_time * frame_fps) % loop_length
+            
+            # Wenn wir in der zweiten Hälfte sind, laufen wir rückwärts
+            if raw_idx >= total_frames:
+                frame_idx = loop_length - raw_idx
+            else:
+                frame_idx = raw_idx
             
             # Aktuellen Frame auf den Bildschirm blitten
             self.s.blit(self.end_frames[frame_idx], (0, 0))
