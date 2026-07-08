@@ -67,7 +67,7 @@ TRANSITION_BOOST = 1.5
 # Tempo des Übergangs Nacht <-> Dämmerung (bg_frame 0..19 pro Sekunde).
 # Größer = schneller. 3.5 -> ~5,4 s für den vollen Übergang, 7.0 -> ~2,7 s,
 # 1.75 -> ~11 s.
-TRANSITION_SPEED = 5.0
+TRANSITION_SPEED = 6.0
 
 # Wenn True: Laternen ziehen Falter nur im (nach unten gerichteten) Licht-
 # kegel an statt im vollen Kreis. Wie weit der Kegel ist, ergibt sich aus
@@ -176,8 +176,6 @@ MOON = dict(
     smooth=0.5,         # Trägheit pro Frame (0=träge/sehr weich .. 1=hart/sofort)
     maxJump=0.5,         # Ausreißer-Schwelle (normalisiert 0..1): groesserer Sprung -> erst bestaetigen
     confirm=2,           # so viele Messages muss ein Sprung halten, sonst verworfen
-    deadzone=0.02,       # Totzone (0..1 der Breite): Tracking-Zittern kleiner als
-                         # das wird ignoriert. 0 = aus, 0.02 ~ 2 % der Breite.
 )
 
 SOUNDS = dict(

@@ -18,14 +18,11 @@ except ImportError:
 
 class Moon:
     def __init__(self, enabled=True, url="ws://127.0.0.1:8765",
-                 flipX=True, flipY=False, smooth=0.22, maxJump=0.3, confirm=2,
-                 deadzone=0.0):
+                 flipX=True, flipY=False, smooth=0.22, maxJump=0.3, confirm=2):
         self.enabled = enabled
         self.url = url
         self.flipX, self.flipY = flipX, flipY
         self.smooth, self.maxJump, self.confirm = smooth, maxJump, confirm
-        self.deadzone = deadzone     # Totzone (normiert): kleinere Ziel-Aenderungen
-                                     # (Tracking-Zittern) werden ignoriert
         self.target = None          # (nx, ny) normalisiert 0..1 oder None
         self._last = None
         self._jump_cand = None
@@ -77,13 +74,7 @@ class Moon:
             if self._jump_count < self.confirm:
                 return
         self._jump_cand = None; self._jump_count = 0
-        self._last = (nx, ny)
-        # Totzone: Ziel nur uebernehmen, wenn es sich um mehr als deadzone bewegt
-        # hat -> Tracking-Zittern wird ignoriert, echte Positionen exakt erreicht
-        # (kein bleibender Versatz). apply() glaettet dann zum ruhigen Ziel.
-        if (self.target is None or self.deadzone <= 0 or
-                math.hypot(nx - self.target[0], ny - self.target[1]) > self.deadzone):
-            self.target = (nx, ny)
+        self._last = (nx, ny); self.target = (nx, ny)
 
     def _on_close(self, ws, *a):
         self._reset_track()
