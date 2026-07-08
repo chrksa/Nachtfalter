@@ -2,7 +2,7 @@
 SCROLL_DIR = 0          # -1 - welt nach links
 
 # Scroll-Tempo des Panorama-Hintergrunds in Render-Pixeln/Sekunde (langsam = klein).
-BG_SCROLL_SPEED = 30
+BG_SCROLL_SPEED = 60
 
 # Seitenverhältnis des Panorama-Bilds (Breite/Höhe). Muss zum PNG passen,
 # damit die Lichtquellen-Attraktoren exakt auf den gemalten Kegeln sitzen.

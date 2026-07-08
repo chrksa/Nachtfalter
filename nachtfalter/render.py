@@ -86,6 +86,7 @@ class Renderer:
         # --- Durchlaufendes Panorama (hat Vorrang vor der Frame-Animation) ---
         self._pano = []
         self._pano_full = None      # vorkomponiertes vollbeleuchtetes Panorama (Cache)
+        self._pano_alpha_buf = None # wiederverwendeter Alpha-Puffer fuer die Blende
         for path in config.ASSETS["bg"].get("panorama", []):
             img = assets.load_image(path, asset_dir)
             if img:
@@ -107,6 +108,7 @@ class Renderer:
         self._sky_cache = None
         self._scaled_cache.clear()
         self._pano_full = None
+        self._pano_alpha_buf = None
 
     def img(self, rel):
         return assets.load_image(rel, self.asset_dir)
@@ -225,39 +227,31 @@ class Renderer:
 
         # Variablen für den Zeichen-Loop vorbereiten
         layer = base
-        second = None
-        second_alpha = 255
+        second_tile = None
 
         if blend >= 0.999 and self._pano_full is not None:
             layer = self._pano_full
         elif blend <= 0.001 or lit is None:
             layer = base
         else:
-            # Wenn wir dazwischen sind, nutzen wir das originale 'lit',
-            # merken uns aber den Alpha-Wert für den Blit-Vorgang unten!
-            second = lit
-            second_alpha = int(blend * 255)
+            # Blende: die beleuchtete Kachel ist fuer ALLE Kachel-Positionen
+            # identisch -> nur EINMAL pro Frame komponieren (frueher pro Kachel,
+            # samt Riesen-Allokation). Alpha-Puffer wird wiederverwendet.
+            a = int(blend * 255)
+            buf = self._pano_alpha_buf
+            if buf is None or buf.get_size() != (dw, H):
+                buf = pygame.Surface((dw, H), pygame.SRCALPHA)
+                self._pano_alpha_buf = buf
+            buf.fill((255, 255, 255, a))
+            second_tile = lit.copy()
+            second_tile.blit(buf, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
 
-        # Zeichnen der Kacheln im Loop
+        # Zeichnen der Kacheln im Loop (nur noch Blits, keine Allokation)
         x = off - dw
         while x < W:
             s.blit(layer, (x, 0))
-            
-            if second is not None:
-                # Hier ist der Trick für moderne Pygame-Versionen:
-                # Wir erstellen ein minimales, temporäres Alpha-Steuer-Surface,
-                # um den Blit zu modulieren, OHNE das 'second'-Bild zu verändern.
-                alpha_modifier = pygame.Surface((dw, H), pygame.SRCALPHA)
-                alpha_modifier.fill((255, 255, 255, second_alpha))
-                
-                # Erst das beleuchtete Bild auf ein frisches Temp-Surface kopieren...
-                temp_tile = second.copy()
-                # ...dann die Transparenz per MULTIPLY (Multiplikation) draufrechnen
-                temp_tile.blit(alpha_modifier, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-                
-                # Jetzt erst auf den echten Bildschirm blitten
-                s.blit(temp_tile, (x, 0))
-                
+            if second_tile is not None:
+                s.blit(second_tile, (x, 0))
             x += dw
 
     def background(self, sim):
