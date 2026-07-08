@@ -176,6 +176,8 @@ MOON = dict(
     smooth=0.5,         # Trägheit pro Frame (0=träge/sehr weich .. 1=hart/sofort)
     maxJump=0.5,         # Ausreißer-Schwelle (normalisiert 0..1): groesserer Sprung -> erst bestaetigen
     confirm=2,           # so viele Messages muss ein Sprung halten, sonst verworfen
+    deadzone=0.02,       # Totzone (0..1 der Breite): Tracking-Zittern kleiner als
+                         # das wird ignoriert. 0 = aus, 0.02 ~ 2 % der Breite.
 )
 
 SOUNDS = dict(
